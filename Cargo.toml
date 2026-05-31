@@ -1,0 +1,11 @@
+[package]
+name = "codelines"
+version = "1.0.0"
+edition = "2021"
+description = "A code line statistics tool supporting multiple languages and comment analysis"
+authors = ["codelines"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+colored = "2"
