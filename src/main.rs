@@ -1,7 +1,8 @@
-/// codelines - 代码量统计工具
+/// codelines - Code line statistics tool
 ///
-/// 支持多种编程语言分别统计，注释单独统计。
-/// 智能识别行注释、块注释，正确处理字符串中的注释标记。
+/// Supports multi-language per-language line counting, with comment analysis.
+/// Intelligently detects line comments and block comments, correctly handling
+/// comment-like markers inside string literals.
 
 mod analyzer;
 mod cli;
@@ -24,20 +25,20 @@ use scanner::{read_file_content, scan_directory};
 fn main() {
     let args = Args::parse();
 
-    // 列出支持的语言
+    // List supported languages
     if args.list {
         print_supported_languages();
         return;
     }
 
-    // 解析路径
+    // Parse paths
     let paths: Vec<PathBuf> = args
         .paths
         .iter()
         .map(|p| PathBuf::from(p))
         .collect();
 
-    // 扫描文件
+    // Scan files
     let scan_result = scan_directory(
         &paths,
         &args.exclude_dirs,
@@ -45,23 +46,23 @@ fn main() {
         &args.languages,
     );
 
-    // 如果没有找到任何代码文件
+    // If no code files were found
     if scan_result.files_by_language.is_empty() {
         if scan_result.total_files_scanned == 0 {
-            eprintln!("未找到任何文件。请检查路径是否正确。");
+            eprintln!("No files found. Please check the path(s).");
         } else {
-            eprintln!("未找到可识别的代码文件。使用 --list 查看支持的语言。");
+            eprintln!("No recognizable code files found. Use --list to see supported languages.");
         }
         std::process::exit(1);
     }
 
-    // 构建语言名称 → 语言定义的映射
+    // Build language name → language definition mapping
     let lang_map: HashMap<String, language::Language> = supported_languages()
         .into_iter()
         .map(|l| (l.name.to_string(), l))
         .collect();
 
-    // 按语言统计
+    // Per-language statistics
     let mut stats_by_lang: HashMap<String, LineStats> = HashMap::new();
     let mut file_counts: HashMap<String, usize> = HashMap::new();
     let mut file_details: HashMap<String, Vec<(PathBuf, LineStats)>> = HashMap::new();
@@ -96,10 +97,10 @@ fn main() {
         }
     }
 
-    // 构建汇总
+    // Build summaries
     let summaries = build_summaries(&stats_by_lang, &file_counts);
 
-    // 输出结果
+    // Output results
     if args.csv {
         print_csv_table(&summaries);
     } else if args.plain {
@@ -108,26 +109,26 @@ fn main() {
         print_colored_table(&summaries, args.verbose);
     }
 
-    // 输出每个文件的详细统计
+    // Output per-file detailed statistics
     if args.files {
-        println!("{}", "按文件详细统计：".bold());
+        println!("{}", "Per-file detailed statistics:".bold());
         println!();
 
-        // 获取语言名排序（与主表一致）
+        // Get language name ordering (consistent with main table)
         let lang_order: Vec<String> = summaries.iter().map(|s| s.language.clone()).collect();
 
         for lang_name in &lang_order {
             if let Some(details) = file_details.get(lang_name) {
-                println!("  {} ({} 个文件)", lang_name.bold(), details.len());
+                println!("  {} ({} files)", lang_name.bold(), details.len());
 
-                // 按有效代码行数降序
+                // Sort by effective code lines descending
                 let mut sorted_details = details.clone();
                 sorted_details.sort_by(|a, b| b.1.effective_code_lines().cmp(&a.1.effective_code_lines()));
 
                 for (path, stats) in &sorted_details {
                     let rel_path = path.to_string_lossy();
                     println!(
-                        "    {:<50} {:>6} 行  代码:{:>5}  注释:{:>5}  混合:{:>4}  空白:{:>4}",
+                        "    {:<50} {:>6} lines  code:{:>5}  comment:{:>5}  mixed:{:>4}  blank:{:>4}",
                         rel_path,
                         stats.total_lines,
                         stats.code_lines,
@@ -141,16 +142,16 @@ fn main() {
         }
     }
 
-    // 打印未知文件类型
+    // Print unknown file types
     if !scan_result.unknown_extensions.is_empty() {
         print_unknown_extensions(&scan_result.unknown_extensions);
     }
 
-    // 打印扫描概要
+    // Print scan summary
     let total_files: usize = file_counts.values().sum();
     let total_langs = stats_by_lang.len();
     println!(
-        "{} 个语言，{} 个文件，共扫描 {} 个文件",
+        "{} languages, {} source files, {} files scanned total",
         total_langs.to_string().green().bold(),
         total_files.to_string().green().bold(),
         scan_result.total_files_scanned.to_string().dimmed(),
