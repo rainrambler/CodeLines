@@ -1,18 +1,19 @@
-/// 分析器模块：逐行解析文件内容，区分代码行/注释行/空白行/混合行
+/// Analyzer module: parses file content line by line, classifying each line
+/// as code, comment, blank, or mixed (code + comment).
 use crate::language::CommentRule;
 
-/// 单个文件的行级统计结果
+/// Per-file line-level statistics result
 #[derive(Debug, Clone, Default)]
 pub struct LineStats {
-    /// 文件总行数
+    /// Total lines in the file
     pub total_lines: usize,
-    /// 纯代码行（不含注释）
+    /// Pure code lines (without comments)
     pub code_lines: usize,
-    /// 纯注释行（不含代码）
+    /// Pure comment lines (without code)
     pub comment_lines: usize,
-    /// 混合行（同时包含代码与注释）
+    /// Mixed lines (code + comment on the same line)
     pub mixed_lines: usize,
-    /// 空白行
+    /// Blank lines
     pub blank_lines: usize,
 }
 
@@ -41,17 +42,17 @@ impl std::ops::AddAssign for LineStats {
 }
 
 impl LineStats {
-    /// 有效代码行数（纯代码行 + 混合行）
+    /// Effective code lines (pure code + mixed)
     pub fn effective_code_lines(&self) -> usize {
         self.code_lines + self.mixed_lines
     }
 
-    /// 总注释行数（纯注释行 + 混合行）
+    /// Total comment lines (pure comment + mixed)
     pub fn total_comment_lines(&self) -> usize {
         self.comment_lines + self.mixed_lines
     }
 
-    /// 代码占比
+    /// Code ratio
     pub fn code_ratio(&self) -> f64 {
         if self.total_lines == 0 {
             0.0
@@ -60,7 +61,7 @@ impl LineStats {
         }
     }
 
-    /// 注释占比
+    /// Comment ratio
     pub fn comment_ratio(&self) -> f64 {
         if self.total_lines == 0 {
             0.0
@@ -70,28 +71,29 @@ impl LineStats {
     }
 }
 
-/// 字符串界定符信息
+/// String delimiter info
 #[derive(Debug, Clone)]
 struct DelimInfo {
     delim: String,
     char_count: usize,
 }
 
-/// 行解析后的状态，需要跨行保持
+/// State maintained across lines during parsing
 #[derive(Debug, Clone, Default)]
 struct ParseState {
-    /// 是否在块注释中
+    /// Whether inside a block comment
     in_block_comment: bool,
-    /// 是否在多行字符串中，以及其界定符的字符数
+    /// Whether inside a multi-line string, and its delimiter char count
     in_string: Option<usize>,
 }
 
-/// 分析单文件内容，返回行级统计
+/// Analyze a single file's content, returning per-line statistics.
 pub fn analyze_content(content: &str, rule: &CommentRule) -> LineStats {
     let mut stats = LineStats::default();
     let mut state = ParseState::default();
 
-    // 预处理字符串界定符信息，按长度降序排列（优先匹配长的，如 """ 优先于 "）
+    // Preprocess string delimiter info, sorted by length descending
+    // (match longer ones first, e.g. """ before ")
     let mut string_delims: Vec<DelimInfo> = rule
         .string_delimiters
         .iter()
@@ -107,13 +109,13 @@ pub fn analyze_content(content: &str, rule: &CommentRule) -> LineStats {
 
         let trimmed = raw_line.trim();
 
-        // 如果当前正在多行字符串或块注释中，空白行也归类
+        // Blank lines inside multi-line strings or block comments are also categorized
         if trimmed.is_empty() && state.in_string.is_none() && !state.in_block_comment {
             stats.blank_lines += 1;
             continue;
         }
 
-        // 解析本行
+        // Parse this line
         let (has_code, has_comment, new_state) =
             parse_line(trimmed, rule, &state, &string_delims);
 
@@ -126,7 +128,7 @@ pub fn analyze_content(content: &str, rule: &CommentRule) -> LineStats {
         } else if has_code {
             stats.code_lines += 1;
         } else {
-            // 纯空白或空行在块注释/字符串中
+            // Pure blank or empty line inside block comment / string
             stats.blank_lines += 1;
         }
     }
@@ -134,7 +136,7 @@ pub fn analyze_content(content: &str, rule: &CommentRule) -> LineStats {
     stats
 }
 
-/// 解析一行文本，返回 (has_code, has_comment, new_state)
+/// Parse one line of text, returning (has_code, has_comment, new_state)
 fn parse_line(
     line: &str,
     rule: &CommentRule,
@@ -154,7 +156,7 @@ fn parse_line(
     let block_end_len = rule.block_comment_end.map(|s| s.chars().count());
 
     while pos < len {
-        // ─── 在块注释中 ───
+        // ─── Inside block comment ───
         if in_block_comment {
             if let Some(end) = rule.block_comment_end {
                 if starts_with(&chars, pos, end) {
@@ -169,15 +171,15 @@ fn parse_line(
             continue;
         }
 
-        // ─── 在多行字符串中 ───
+        // ─── Inside multi-line string ───
         if let Some(delim_len) = in_string {
-            // 转义字符跳过
+            // Skip escaped characters
             if chars[pos] == '\\' && pos + 1 < len {
                 has_code = true;
                 pos += 2;
                 continue;
             }
-            // 检测字符串结束
+            // Detect string closing
             let mut closed = false;
             for di in string_delims {
                 if di.char_count == delim_len && starts_with(&chars, pos, &di.delim) {
@@ -196,16 +198,16 @@ fn parse_line(
             continue;
         }
 
-        // ─── 普通状态 ───
+        // ─── Normal state ───
 
-        // 转义字符
+        // Escape character
         if chars[pos] == '\\' && pos + 1 < len {
             has_code = true;
             pos += 2;
             continue;
         }
 
-        // 检测字符串界定符（按长度降序优先匹配长的）
+        // Detect string delimiter (match longer ones first, descending length)
         let mut found_string = false;
         for di in string_delims {
             if starts_with(&chars, pos, &di.delim) {
@@ -219,7 +221,7 @@ fn parse_line(
             continue;
         }
 
-        // 检测块注释开始
+        // Detect block comment start
         if let Some(start) = rule.block_comment_start {
             if starts_with(&chars, pos, start) {
                 has_comment = true;
@@ -229,7 +231,7 @@ fn parse_line(
             }
         }
 
-        // 检测行注释
+        // Detect line comment
         let mut found_line_comment = false;
         for lc in &rule.line_comments {
             if starts_with(&chars, pos, lc) {
@@ -243,7 +245,7 @@ fn parse_line(
             continue;
         }
 
-        // 普通代码字符
+        // Regular code character
         has_code = true;
         pos += 1;
     }
@@ -258,7 +260,7 @@ fn parse_line(
     )
 }
 
-/// 判断 chars[pos..] 是否以 target 开头
+/// Returns true if chars[pos..] starts with target
 fn starts_with(chars: &[char], pos: usize, target: &str) -> bool {
     let target_chars: Vec<char> = target.chars().collect();
     if pos + target_chars.len() > chars.len() {
