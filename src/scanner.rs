@@ -1,4 +1,5 @@
-/// 文件遍历与识别模块：递归扫描目录，按语言分类收集文件
+/// File traversal and identification module: recursively scans directories,
+/// grouping files by language.
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::language::{self, Language};
 use walkdir::WalkDir;
 
-/// 默认忽略的目录名
+/// Default directory names to ignore
 const DEFAULT_IGNORE_DIRS: &[&str] = &[
     ".git",
     ".svn",
@@ -35,7 +36,7 @@ const DEFAULT_IGNORE_DIRS: &[&str] = &[
     "cmake-build-release",
 ];
 
-/// 默认忽略的文件名
+/// Default file names to ignore
 const DEFAULT_IGNORE_FILES: &[&str] = &[
     "package-lock.json",
     "yarn.lock",
@@ -48,15 +49,15 @@ const DEFAULT_IGNORE_FILES: &[&str] = &[
     "Thumbs.db",
 ];
 
-/// 扫描结果：按语言分组收集到的文件路径列表
+/// Scan result: file paths grouped by language
 pub struct ScanResult {
-    /// 语言名称 → 文件路径列表
+    /// Language name → list of file paths
     pub files_by_language: HashMap<String, Vec<PathBuf>>,
-    /// 未识别的文件扩展名集合
+    /// Unrecognized file extensions and their counts
     pub unknown_extensions: HashMap<String, usize>,
-    /// 忽略的目录数
+    /// Number of skipped directories
     pub skipped_dirs: usize,
-    /// 总扫描文件数
+    /// Total files scanned
     pub total_files_scanned: usize,
 }
 
@@ -71,7 +72,7 @@ impl ScanResult {
     }
 }
 
-/// 递归扫描指定路径，按语言分类收集源代码文件
+/// Recursively scan the given paths, collecting source files grouped by language.
 pub fn scan_directory(
     paths: &[PathBuf],
     ignore_dirs: &[String],
@@ -81,7 +82,7 @@ pub fn scan_directory(
     let mut result = ScanResult::new();
     let all_langs = language::supported_languages();
 
-    // 构建过滤集合
+    // Build filter sets
     let ignore_dir_set: Vec<String> = DEFAULT_IGNORE_DIRS
         .iter()
         .map(|s| s.to_string())
@@ -94,7 +95,7 @@ pub fn scan_directory(
         .chain(ignore_files.iter().cloned())
         .collect();
 
-    // 构建语言过滤：如果用户指定了语言，则只包含那些语言
+    // Build language filter: if user specified languages, only include those
     let filtered_langs: Vec<Language> = if languages_filter.is_empty() {
         all_langs
     } else {
@@ -108,7 +109,7 @@ pub fn scan_directory(
             .collect()
     };
 
-    // 构建扩展名 → 语言名称的快速查找表
+    // Build extension → language name lookup table
     let mut ext_to_lang: HashMap<String, String> = HashMap::new();
     for lang in &filtered_langs {
         for ext in &lang.extensions {
@@ -118,23 +119,23 @@ pub fn scan_directory(
 
     for root_path in paths {
         if !root_path.exists() {
-            eprintln!("警告：路径不存在，已跳过: {}", root_path.display());
+            eprintln!("Warning: path does not exist, skipping: {}", root_path.display());
             continue;
         }
 
-        // 如果是文件，直接处理
+        // If it's a file, process directly
         if root_path.is_file() {
             result.total_files_scanned += 1;
             process_file(root_path, &ext_to_lang, &mut result);
             continue;
         }
 
-        // 如果是目录，递归遍历
+        // If it's a directory, walk recursively
         for entry in WalkDir::new(root_path)
             .follow_links(false)
             .into_iter()
             .filter_entry(|e| {
-                // 过滤要忽略的目录
+                // Filter out directories to ignore
                 if e.file_type().is_dir() {
                     let name = e.file_name().to_string_lossy();
                     if ignore_dir_set.iter().any(|d| name == d.as_str()) {
@@ -147,7 +148,7 @@ pub fn scan_directory(
             match entry {
                 Ok(e) => {
                     if e.file_type().is_file() {
-                        // 过滤要忽略的文件
+                        // Filter out files to ignore
                         let file_name = e.file_name().to_string_lossy();
                         if ignore_file_set.iter().any(|f| file_name == f.as_str()) {
                             continue;
@@ -158,7 +159,7 @@ pub fn scan_directory(
                     }
                 }
                 Err(err) => {
-                    eprintln!("警告：无法访问文件: {}", err);
+                    eprintln!("Warning: unable to access: {}", err);
                 }
             }
         }
@@ -167,7 +168,7 @@ pub fn scan_directory(
     result
 }
 
-/// 处理单个文件：识别语言并归类
+/// Process a single file: identify language and classify
 fn process_file(
     path: &Path,
     ext_to_lang: &HashMap<String, String>,
@@ -195,21 +196,21 @@ fn process_file(
             }
         }
         None => {
-            // 没有扩展名的文件，跳过
+            // Files without an extension, skip
             *result
                 .unknown_extensions
-                .entry("(无扩展名)".to_string())
+                .entry("(no extension)".to_string())
                 .or_insert(0) += 1;
         }
     }
 }
 
-/// 读取文件内容
+/// Read file content from disk
 pub fn read_file_content(path: &Path) -> Option<String> {
     match fs::read_to_string(path) {
         Ok(content) => Some(content),
         Err(e) => {
-            eprintln!("警告：无法读取文件 {}: {}", path.display(), e);
+            eprintln!("Warning: unable to read file {}: {}", path.display(), e);
             None
         }
     }
