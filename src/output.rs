@@ -1,4 +1,4 @@
-/// 结果格式化输出模块
+/// Result formatting and output module
 use std::collections::HashMap;
 
 use colored::*;
@@ -6,7 +6,7 @@ use colored::*;
 use crate::analyzer::LineStats;
 use crate::language;
 
-/// 按语言汇总的统计结果
+/// Aggregated statistics summary for one language
 #[derive(Debug, Clone, Default)]
 pub struct LanguageSummary {
     pub language: String,
@@ -19,17 +19,17 @@ pub struct LanguageSummary {
 }
 
 impl LanguageSummary {
-    /// 有效代码行（纯代码 + 混合行）
+    /// Effective code lines (pure code + mixed)
     pub fn effective_code(&self) -> usize {
         self.code_lines + self.mixed_lines
     }
 
-    /// 总注释相关行（纯注释 + 混合行）
+    /// Total comment-related lines (pure comment + mixed)
     pub fn total_comment(&self) -> usize {
         self.comment_lines + self.mixed_lines
     }
 
-    /// 代码占比
+    /// Code ratio
     pub fn code_ratio(&self) -> f64 {
         if self.total_lines == 0 {
             0.0
@@ -38,7 +38,7 @@ impl LanguageSummary {
         }
     }
 
-    /// 注释占比
+    /// Comment ratio
     pub fn comment_ratio(&self) -> f64 {
         if self.total_lines == 0 {
             0.0
@@ -48,7 +48,7 @@ impl LanguageSummary {
     }
 }
 
-/// 从语言级别的行统计汇总计算 LanguageSummary
+/// Build LanguageSummary from per-language line statistics
 pub fn build_summaries(
     stats_by_lang: &HashMap<String, LineStats>,
     file_counts: &HashMap<String, usize>,
@@ -66,17 +66,17 @@ pub fn build_summaries(
         })
         .collect();
 
-    // 按有效代码行数降序排列
+    // Sort by effective code lines descending
     summaries.sort_by(|a, b| b.effective_code().cmp(&a.effective_code()));
     summaries
 }
 
-/// 彩色终端输出
+/// Colored terminal output
 pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
-    // 计算全局汇总
+    // Compute global totals
     let total = summaries.iter().fold(LanguageSummary::default(), |acc, s| {
         LanguageSummary {
-            language: "总计".to_string(),
+            language: "Total".to_string(),
             file_count: acc.file_count + s.file_count,
             total_lines: acc.total_lines + s.total_lines,
             code_lines: acc.code_lines + s.code_lines,
@@ -86,16 +86,16 @@ pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
         }
     });
 
-    // 表头
+    // Header
     let header = if verbose {
         format!(
             "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
-            "语言", "文件数", "总行数", "代码行", "注释行", "混合行", "空白行", "代码%", "注释%"
+            "Language", "Files", "Total", "Code", "Comment", "Mixed", "Blank", "Code%", "Comment%"
         )
     } else {
         format!(
             "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
-            "语言", "文件数", "总行数", "有效代码", "总注释", "空白行", "代码%", "注释%"
+            "Language", "Files", "Total", "Eff.Code", "Comments", "Blank", "Code%", "Comment%"
         )
     };
 
@@ -103,7 +103,7 @@ pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
     println!("{}", header.bold().cyan());
     println!("{}", "─".repeat(header.len()).dimmed());
 
-    // 每种语言一行
+    // One row per language
     for s in summaries {
         let line = if verbose {
             format!(
@@ -134,7 +134,7 @@ pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
         println!("{}", line);
     }
 
-    // 汇总行
+    // Totals row
     println!("{}", "─".repeat(header.len()).dimmed());
     let total_line = if verbose {
         format!(
@@ -166,7 +166,7 @@ pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
     println!();
 }
 
-/// 纯文本输出（无颜色控制字符，适合重定向到文件）
+/// Plain text output (no ANSI control chars, suitable for piping to file)
 pub fn print_plain_table(summaries: &[LanguageSummary], verbose: bool) {
     let total = summaries.iter().fold(LanguageSummary::default(), |acc, s| {
         LanguageSummary {
@@ -255,7 +255,7 @@ pub fn print_plain_table(summaries: &[LanguageSummary], verbose: bool) {
     println!("{}", total_line);
 }
 
-/// CSV 输出
+/// CSV output
 pub fn print_csv_table(summaries: &[LanguageSummary]) {
     println!("Language,Files,TotalLines,CodeLines,CommentLines,MixedLines,BlankLines,EffectiveCode,TotalComment,CodeRatio,CommentRatio");
 
@@ -277,9 +277,9 @@ pub fn print_csv_table(summaries: &[LanguageSummary]) {
     }
 }
 
-/// 打印支持的语言列表
+/// Print the list of all supported languages
 pub fn print_supported_languages() {
-    println!("\n支持的语言及文件扩展名：\n");
+    println!("\nSupported languages and file extensions:\n");
     for lang in language::supported_languages() {
         let exts = lang.extensions.join(", ");
         println!("  {:<24} {}", format!("[{}]", lang.name), exts);
@@ -287,16 +287,16 @@ pub fn print_supported_languages() {
     println!();
 }
 
-/// 打印未知扩展名统计
+/// Print unknown extension statistics
 pub fn print_unknown_extensions(unknown: &HashMap<String, usize>) {
     if unknown.is_empty() {
         return;
     }
-    println!("{}", "未识别的文件类型（已跳过）：".dimmed());
+    println!("{}", "Unrecognized file types (skipped):".dimmed());
     let mut entries: Vec<_> = unknown.iter().collect();
     entries.sort_by(|a, b| b.1.cmp(a.1));
     for (ext, count) in entries {
-        println!("  {} {} 个文件", ext, count);
+        println!("  {} {} file(s)", ext, count);
     }
     println!();
 }
