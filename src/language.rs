@@ -387,6 +387,17 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'", "`"],
             },
         },
+        // ─── Markdown ───
+        Language {
+            name: "Markdown",
+            extensions: vec![".md", ".markdown", ".mdown", ".mkd", ".mkdn"],
+            comment_rule: CommentRule {
+                line_comments: vec![],
+                block_comment_start: Some("<!--"),
+                block_comment_end: Some("-->"),
+                string_delimiters: vec!["\"", "'", "`"],
+            },
+        },
     ]
 }
 

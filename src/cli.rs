@@ -42,7 +42,7 @@ pub struct Args {
     pub csv: bool,
 
     /// 列出所有支持的语言及文件扩展名
-    #[arg(short, long)]
+    #[arg(long)]
     pub list: bool,
 
     /// 显示每个文件的详细统计

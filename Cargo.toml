@@ -1,6 +1,6 @@
 [package]
 name = "codelines"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "A code line statistics tool supporting multiple languages and comment analysis"
 authors = ["codelines"]
