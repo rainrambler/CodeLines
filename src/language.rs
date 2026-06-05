@@ -1,38 +1,39 @@
-/// 语言定义模块：定义各种编程语言的文件扩展名与注释规则
+/// Language definition module: defines file extensions and comment rules
+/// for each supported programming language.
 use std::collections::HashMap;
 
-/// 描述一种语言的注释规则
+/// Describes the comment rules for a language
 #[derive(Debug, Clone)]
 pub struct CommentRule {
-    /// 单行注释前缀列表，如 ["//", "#"]
+    /// Line comment prefixes, e.g. ["//", "#"]
     pub line_comments: Vec<&'static str>,
-    /// 多行注释起始标记，如 "/*"
+    /// Block comment start marker, e.g. "/*"
     pub block_comment_start: Option<&'static str>,
-    /// 多行注释结束标记，如 "*/"
+    /// Block comment end marker, e.g. "*/"
     pub block_comment_end: Option<&'static str>,
-    /// 字符串界定符（用于避免误判字符串中的注释标记）
+    /// String delimiters (to avoid false positives with comment markers inside strings)
     pub string_delimiters: Vec<&'static str>,
 }
 
-/// 描述一种受支持的语言
+/// Describes a supported language
 #[derive(Debug, Clone)]
 pub struct Language {
-    /// 语言显示名称
+    /// Display name of the language
     pub name: &'static str,
-    /// 文件扩展名列表（包含点号，如 ".rs"）
+    /// File extensions (including dot, e.g. ".rs")
     pub extensions: Vec<&'static str>,
-    /// 注释规则
+    /// Comment rules
     pub comment_rule: CommentRule,
 }
 
 impl Language {
-    /// 判断给定文件扩展名是否属于该语言
+    /// Returns true if the given file extension belongs to this language
     pub fn matches_extension(&self, ext: &str) -> bool {
         self.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
     }
 }
 
-/// 获取所有支持的语言列表
+/// Returns the list of all supported languages
 pub fn supported_languages() -> Vec<Language> {
     vec![
         // ─── Rust ───
@@ -401,14 +402,14 @@ pub fn supported_languages() -> Vec<Language> {
     ]
 }
 
-/// 根据文件扩展名查找对应的语言
+/// Find the language definition matching a file extension
 pub fn find_language_by_ext(ext: &str) -> Option<Language> {
     supported_languages()
         .into_iter()
         .find(|lang| lang.matches_extension(ext))
 }
 
-/// 获取扩展名 → 语言名称的映射表
+/// Build extension → language name mapping table
 pub fn extension_map() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
     for lang in supported_languages() {
@@ -419,7 +420,7 @@ pub fn extension_map() -> HashMap<&'static str, &'static str> {
     map
 }
 
-/// 获取所有支持的语言名称列表
+/// Get the list of all supported language names
 pub fn list_language_names() -> Vec<&'static str> {
     supported_languages().iter().map(|l| l.name).collect()
 }
