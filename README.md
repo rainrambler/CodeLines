@@ -15,6 +15,7 @@ Count lines of code, comments, and blanks across your entire project — intelli
 - **Multiple Output Formats** — Colored terminal output, plain text (pipe-friendly), or CSV.
 - **Verbose & Per-File Modes** — Drill down into detailed per-file statistics or see a compact summary.
 - **Ratio Calculations** — Code% and comment% for each language and overall totals.
+- **Desktop GUI** — an optional native window (`--features gui`) with live progress, charts, sortable tables and CSV/JSON export.
 
 ## Installation
 
@@ -64,6 +65,38 @@ codelines --csv > stats.csv
 codelines --list
 ```
 
+## Desktop GUI
+
+CodeLines also ships a native desktop interface built with [egui](https://github.com/emilk/egui).
+It reuses the exact same analysis engine as the CLI and is compiled only when the
+`gui` feature is enabled, so the CLI binary stays dependency-light.
+
+```bash
+# Build and run the GUI (optionally pointing it at a project folder)
+cargo run --release --features gui --bin codelines-gui
+cargo run --release --features gui --bin codelines-gui -- /path/to/project
+```
+
+The GUI offers:
+
+- A project picker with drag & drop, plus include/exclude filters and a searchable language selector.
+- Live progress while scanning and analyzing (Esc cancels a running analysis).
+- An **Overview** tab with KPI cards, a stacked bar chart of lines by language and a donut chart of each language's share.
+- A **Files** tab with a filterable, sortable per-file table (double-click a row to reveal the file in your file manager).
+- A **Diagnostics** tab listing skipped file types and read warnings.
+- Export to language-summary CSV, per-file CSV, JSON or a plain-text report.
+- Light and dark themes.
+
+| Shortcut | Action |
+|----------|--------|
+| `Cmd/Ctrl + O` | Open a project folder |
+| `Cmd/Ctrl + R` / `F5` | Analyze again |
+| `Cmd/Ctrl + E` | Export the language summary (CSV) |
+| `Esc` | Cancel a running analysis |
+
+See [docs/GUI_DESIGN.md](docs/GUI_DESIGN.md) for the full design: architecture, screen
+specifications, visual system, data model and performance notes.
+
 ## Example Output
 
 ```
@@ -83,6 +116,17 @@ Total                      16       2100       1500        330        270    71.
 3. **Analyze** — Parses each line with language-specific comment rules, tracking block comment and multi-line string state across lines.
 4. **Aggregate** — Sums statistics per language and globally.
 5. **Output** — Renders results in the chosen format (colored table, plain text, or CSV).
+
+Steps 1–4 live in the `codelines` library (`report::analyze`) and are shared by the CLI and the GUI;
+step 5 is implemented by each front-end.
+
+## Development
+
+```bash
+cargo test                 # core analysis pipeline
+cargo test --features gui  # pipeline + export formats
+cargo clippy --features gui --all-targets
+```
 
 ## License
 

@@ -59,6 +59,8 @@ pub struct ScanResult {
     pub skipped_dirs: usize,
     /// Total files scanned
     pub total_files_scanned: usize,
+    /// Non-fatal problems (missing paths, unreadable entries)
+    pub warnings: Vec<String>,
 }
 
 impl ScanResult {
@@ -68,7 +70,14 @@ impl ScanResult {
             unknown_extensions: HashMap::new(),
             skipped_dirs: 0,
             total_files_scanned: 0,
+            warnings: Vec::new(),
         }
+    }
+}
+
+impl Default for ScanResult {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -78,6 +87,18 @@ pub fn scan_directory(
     ignore_dirs: &[String],
     ignore_files: &[String],
     languages_filter: &[String],
+) -> ScanResult {
+    scan_directory_with_progress(paths, ignore_dirs, ignore_files, languages_filter, |_| {})
+}
+
+/// Same as [`scan_directory`], but calls `on_file` for every visited file,
+/// which allows front-ends to display live progress.
+pub fn scan_directory_with_progress(
+    paths: &[PathBuf],
+    ignore_dirs: &[String],
+    ignore_files: &[String],
+    languages_filter: &[String],
+    mut on_file: impl FnMut(&Path),
 ) -> ScanResult {
     let mut result = ScanResult::new();
     let all_langs = language::supported_languages();
@@ -119,13 +140,17 @@ pub fn scan_directory(
 
     for root_path in paths {
         if !root_path.exists() {
-            eprintln!("Warning: path does not exist, skipping: {}", root_path.display());
+            result.warnings.push(format!(
+                "Warning: path does not exist, skipping: {}",
+                root_path.display()
+            ));
             continue;
         }
 
         // If it's a file, process directly
         if root_path.is_file() {
             result.total_files_scanned += 1;
+            on_file(root_path);
             process_file(root_path, &ext_to_lang, &mut result);
             continue;
         }
@@ -155,11 +180,14 @@ pub fn scan_directory(
                         }
 
                         result.total_files_scanned += 1;
+                        on_file(e.path());
                         process_file(e.path(), &ext_to_lang, &mut result);
                     }
                 }
                 Err(err) => {
-                    eprintln!("Warning: unable to access: {}", err);
+                    result
+                        .warnings
+                        .push(format!("Warning: unable to access: {}", err));
                 }
             }
         }
@@ -169,11 +197,7 @@ pub fn scan_directory(
 }
 
 /// Process a single file: identify language and classify
-fn process_file(
-    path: &Path,
-    ext_to_lang: &HashMap<String, String>,
-    result: &mut ScanResult,
-) {
+fn process_file(path: &Path, ext_to_lang: &HashMap<String, String>, result: &mut ScanResult) {
     match path.extension() {
         Some(ext_os) => {
             let ext_str = format!(".{}", ext_os.to_string_lossy());
@@ -188,10 +212,7 @@ fn process_file(
                         .push(path.to_path_buf());
                 }
                 None => {
-                    *result
-                        .unknown_extensions
-                        .entry(ext_str)
-                        .or_insert(0) += 1;
+                    *result.unknown_extensions.entry(ext_str).or_insert(0) += 1;
                 }
             }
         }
@@ -205,13 +226,11 @@ fn process_file(
     }
 }
 
-/// Read file content from disk
-pub fn read_file_content(path: &Path) -> Option<String> {
-    match fs::read_to_string(path) {
-        Ok(content) => Some(content),
-        Err(e) => {
-            eprintln!("Warning: unable to read file {}: {}", path.display(), e);
-            None
-        }
-    }
+/// Read file content from disk.
+///
+/// Returns a human readable message on failure so callers can decide whether to
+/// print it (CLI) or collect it as a diagnostic (GUI).
+pub fn read_file_content(path: &Path) -> Result<String, String> {
+    fs::read_to_string(path)
+        .map_err(|e| format!("Warning: unable to read file {}: {}", path.display(), e))
 }

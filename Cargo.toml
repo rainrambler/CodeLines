@@ -5,7 +5,30 @@ edition = "2024"
 description = "A code line statistics tool supporting multiple languages and comment analysis"
 authors = ["codelines"]
 
+[lib]
+name = "codelines"
+path = "src/lib.rs"
+
+[[bin]]
+name = "codelines"
+path = "src/main.rs"
+
+[[bin]]
+name = "codelines-gui"
+path = "src/bin/codelines-gui.rs"
+required-features = ["gui"]
+
+[features]
+default = []
+gui = ["dep:eframe", "dep:egui_extras", "dep:rfd"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 walkdir = "2"
 colored = "2"
+eframe = { version = "0.37", default-features = false, features = [
+    "default_fonts",
+    "glow",
+], optional = true }
+egui_extras = { version = "0.37", default-features = false, optional = true }
+rfd = { version = "0.17", optional = true }

@@ -71,11 +71,11 @@ pub fn build_summaries(
     summaries
 }
 
-/// Colored terminal output
-pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
-    // Compute global totals
-    let total = summaries.iter().fold(LanguageSummary::default(), |acc, s| {
-        LanguageSummary {
+/// Sum all summaries into a single total row.
+pub fn total_summary(summaries: &[LanguageSummary]) -> LanguageSummary {
+    summaries
+        .iter()
+        .fold(LanguageSummary::default(), |acc, s| LanguageSummary {
             language: "Total".to_string(),
             file_count: acc.file_count + s.file_count,
             total_lines: acc.total_lines + s.total_lines,
@@ -83,8 +83,12 @@ pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
             comment_lines: acc.comment_lines + s.comment_lines,
             mixed_lines: acc.mixed_lines + s.mixed_lines,
             blank_lines: acc.blank_lines + s.blank_lines,
-        }
-    });
+        })
+}
+
+/// Colored terminal output
+pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
+    let total = total_summary(summaries);
 
     // Header
     let header = if verbose {
@@ -166,21 +170,29 @@ pub fn print_colored_table(summaries: &[LanguageSummary], verbose: bool) {
     println!();
 }
 
-/// Plain text output (no ANSI control chars, suitable for piping to file)
-pub fn print_plain_table(summaries: &[LanguageSummary], verbose: bool) {
-    let total = summaries.iter().fold(LanguageSummary::default(), |acc, s| {
-        LanguageSummary {
-            language: "Total".to_string(),
-            file_count: acc.file_count + s.file_count,
-            total_lines: acc.total_lines + s.total_lines,
-            code_lines: acc.code_lines + s.code_lines,
-            comment_lines: acc.comment_lines + s.comment_lines,
-            mixed_lines: acc.mixed_lines + s.mixed_lines,
-            blank_lines: acc.blank_lines + s.blank_lines,
-        }
-    });
+/// Plain text table (no ANSI control characters).
+pub fn format_plain_table(summaries: &[LanguageSummary], verbose: bool) -> String {
+    let total = total_summary(summaries);
+    let header = plain_header(verbose);
 
-    let header = if verbose {
+    let mut out = String::new();
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&"-".repeat(header.len()));
+    out.push('\n');
+
+    for s in summaries {
+        push_plain_row(&mut out, s, verbose);
+    }
+
+    out.push_str(&"-".repeat(header.len()));
+    out.push('\n');
+    push_plain_row(&mut out, &total, verbose);
+    out
+}
+
+fn plain_header(verbose: bool) -> String {
+    if verbose {
         format!(
             "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
             "Language", "Files", "Total", "Code", "Comment", "Mixed", "Blank", "Code%", "Comment%"
@@ -190,78 +202,54 @@ pub fn print_plain_table(summaries: &[LanguageSummary], verbose: bool) {
             "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8}",
             "Language", "Files", "Total", "Eff.Code", "Comments", "Blank", "Code%", "Comment%"
         )
-    };
-
-    println!("{}", header);
-    println!("{}", "-".repeat(header.len()));
-
-    for s in summaries {
-        let line = if verbose {
-            format!(
-                "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>7.1}% {:>7.1}%",
-                s.language,
-                s.file_count,
-                s.total_lines,
-                s.code_lines,
-                s.comment_lines,
-                s.mixed_lines,
-                s.blank_lines,
-                s.code_ratio() * 100.0,
-                s.comment_ratio() * 100.0,
-            )
-        } else {
-            format!(
-                "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>7.1}% {:>7.1}%",
-                s.language,
-                s.file_count,
-                s.total_lines,
-                s.effective_code(),
-                s.total_comment(),
-                s.blank_lines,
-                s.code_ratio() * 100.0,
-                s.comment_ratio() * 100.0,
-            )
-        };
-        println!("{}", line);
     }
+}
 
-    println!("{}", "-".repeat(header.len()));
-    let total_line = if verbose {
+fn push_plain_row(out: &mut String, s: &LanguageSummary, verbose: bool) {
+    let line = if verbose {
         format!(
             "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>7.1}% {:>7.1}%",
-            total.language,
-            total.file_count,
-            total.total_lines,
-            total.code_lines,
-            total.comment_lines,
-            total.mixed_lines,
-            total.blank_lines,
-            total.code_ratio() * 100.0,
-            total.comment_ratio() * 100.0,
+            s.language,
+            s.file_count,
+            s.total_lines,
+            s.code_lines,
+            s.comment_lines,
+            s.mixed_lines,
+            s.blank_lines,
+            s.code_ratio() * 100.0,
+            s.comment_ratio() * 100.0,
         )
     } else {
         format!(
             "{:<24} {:>8} {:>10} {:>10} {:>10} {:>10} {:>7.1}% {:>7.1}%",
-            total.language,
-            total.file_count,
-            total.total_lines,
-            total.effective_code(),
-            total.total_comment(),
-            total.blank_lines,
-            total.code_ratio() * 100.0,
-            total.comment_ratio() * 100.0,
+            s.language,
+            s.file_count,
+            s.total_lines,
+            s.effective_code(),
+            s.total_comment(),
+            s.blank_lines,
+            s.code_ratio() * 100.0,
+            s.comment_ratio() * 100.0,
         )
     };
-    println!("{}", total_line);
+    out.push_str(&line);
+    out.push('\n');
 }
 
-/// CSV output
-pub fn print_csv_table(summaries: &[LanguageSummary]) {
-    println!("Language,Files,TotalLines,CodeLines,CommentLines,MixedLines,BlankLines,EffectiveCode,TotalComment,CodeRatio,CommentRatio");
+/// Print the plain text table (no colors, suitable for piping to a file)
+pub fn print_plain_table(summaries: &[LanguageSummary], verbose: bool) {
+    print!("{}", format_plain_table(summaries, verbose));
+}
+
+/// CSV table.
+pub fn format_csv_table(summaries: &[LanguageSummary]) -> String {
+    let mut out = String::from(
+        "Language,Files,TotalLines,CodeLines,CommentLines,MixedLines,BlankLines,EffectiveCode,TotalComment,CodeRatio,CommentRatio\n",
+    );
 
     for s in summaries {
-        println!(
-            "{},{},{},{},{},{},{},{},{},{:.4},{:.4}",
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},{},{},{:.4},{:.4}\n",
             s.language,
             s.file_count,
             s.total_lines,
@@ -273,8 +261,15 @@ pub fn print_csv_table(summaries: &[LanguageSummary]) {
             s.total_comment(),
             s.code_ratio(),
             s.comment_ratio(),
-        );
+        ));
     }
+
+    out
+}
+
+/// Print the CSV table.
+pub fn print_csv_table(summaries: &[LanguageSummary]) {
+    print!("{}", format_csv_table(summaries));
 }
 
 /// Print the list of all supported languages
@@ -287,15 +282,13 @@ pub fn print_supported_languages() {
     println!();
 }
 
-/// Print unknown extension statistics
-pub fn print_unknown_extensions(unknown: &HashMap<String, usize>) {
+/// Print unknown extension statistics (expects entries sorted by count, descending)
+pub fn print_unknown_extensions(unknown: &[(String, usize)]) {
     if unknown.is_empty() {
         return;
     }
     println!("{}", "Unrecognized file types (skipped):".dimmed());
-    let mut entries: Vec<_> = unknown.iter().collect();
-    entries.sort_by(|a, b| b.1.cmp(a.1));
-    for (ext, count) in entries {
+    for (ext, count) in unknown {
         println!("  {} {} file(s)", ext, count);
     }
     println!();
