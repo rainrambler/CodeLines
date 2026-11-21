@@ -10,7 +10,7 @@ use clap::Parser;
     long_about = "codelines is a high-performance code line statistics tool that recursively\n\
                   scans project directories, counting total lines, code lines, comment lines,\n\
                   mixed lines, and blank lines per programming language.\n\
-                  Supports 30+ programming languages, intelligently detects comments\n\
+                  Supports 120 programming languages, intelligently detects comments\n\
                   (both block and line comments), and correctly handles comment-like\n\
                   markers inside strings to avoid false positives."
 )]

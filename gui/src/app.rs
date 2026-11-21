@@ -811,9 +811,12 @@ impl CodeLinesApp {
                     .color(theme::ACCENT),
             );
             ui.label(
-                RichText::new("Line statistics for 35+ languages")
-                    .size(14.0)
-                    .color(theme::muted(ui)),
+                RichText::new(format!(
+                    "Line statistics for {} languages",
+                    self.total_languages
+                ))
+                .size(14.0)
+                .color(theme::muted(ui)),
             );
             ui.add_space(18.0);
 

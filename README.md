@@ -6,7 +6,7 @@ Count lines of code, comments, and blanks across your entire project — intelli
 
 ## Features
 
-- **35+ Languages Supported** — Rust, C/C++, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, C#, PHP, Shell, Perl, Lua, HTML, CSS/SCSS/Less, SQL, Haskell, Zig, Vim Script, TOML, YAML, XML, Dart, R, Elixir, Erlang, Julia, Fortran, Ada, Vue, Markdown, and more.
+- **120 Languages Supported** — Rust, C/C++, C#, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, PHP, Lua, Haskell, SQL, HTML/CSS, Markdown, plus CUDA, OpenCL, GLSL/HLSL/Metal, Verilog/VHDL, Solidity, Move, Zig, Nim, Nix, HCL/Terraform, PowerShell, Dart, Elixir, Erlang, Julia, Fortran, Ada, Vue, Svelte and many more. Run `codelines --list` for the full list.
 - **Smart Comment Detection** — Distinguishes line comments (`//`, `#`, `--`, `%`, etc.) and block comments (`/* */`, `""" """`, `<!-- -->`, `{- -}`, etc.) per language.
 - **String-Aware Parsing** — Correctly ignores comment-like markers inside string literals to avoid false positives.
 - **Line Classification** — Each line is classified as: **code**, **comment**, **mixed** (code + comment), or **blank**.
@@ -17,6 +17,9 @@ Count lines of code, comments, and blanks across your entire project — intelli
 - **Verbose & Per-File Modes** — Drill down into detailed per-file statistics or see a compact summary.
 - **Ratio Calculations** — Code% and comment% for each language and overall totals.
 - **Desktop GUI** — a separate crate (`codelines-gui`) with live progress, charts, sortable tables and CSV/JSON export.
+
+See [docs/LANGUAGE_SUPPORT_DESIGN.md](docs/LANGUAGE_SUPPORT_DESIGN.md) for the language
+registry, comment-rule model and roadmap for additional languages.
 
 ## Installation
 
