@@ -1,8 +1,8 @@
-//! Desktop GUI front-end (enabled by the `gui` feature).
+//! Desktop GUI front-end for CodeLines.
 //!
-//! The GUI reuses the analysis pipeline from [`crate::report`] on a
-//! background thread and only redraws state, so scanning a large project never
-//! blocks the window.
+//! This is a separate crate from the `codelines` library/CLI: it depends on the
+//! public analysis pipeline ([`codelines::report`]) and runs it on a background
+//! thread, so scanning a large project never blocks the window.
 
 mod app;
 mod charts;

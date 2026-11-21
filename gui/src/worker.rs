@@ -6,7 +6,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use eframe::egui;
 
-use crate::report::{self, Progress, Report, ScanOptions};
+use codelines::report::{self, Progress, Report, ScanOptions};
 
 /// Messages sent from the worker thread to the UI.
 pub enum WorkerMsg {

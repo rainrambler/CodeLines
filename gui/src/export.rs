@@ -3,8 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::output::{format_csv_table, format_plain_table};
-use crate::report::Report;
+use codelines::output::{format_csv_table, format_plain_table};
+use codelines::report::Report;
 
 use super::widgets::{format_duration, format_number};
 
@@ -321,7 +321,7 @@ fn json_string(value: &str) -> String {
 mod tests {
     use std::fs;
 
-    use crate::report::{ScanOptions, analyze};
+    use codelines::report::{ScanOptions, analyze};
 
     use super::*;
 

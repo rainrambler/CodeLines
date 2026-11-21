@@ -1,6 +1,6 @@
 # CodeLines Desktop GUI — Design
 
-Status: implemented (feature `gui`).
+Status: implemented (separate `codelines-gui` crate).
 
 The desktop front-end shares the exact analysis engine with the CLI and adds a
 visual, exploratory layer on top of it: pick a folder, watch the scan progress,
@@ -20,7 +20,7 @@ All user-facing text in the GUI is **English**.
 | 2 | Never block the window | Analysis runs on a worker thread; UI only renders snapshots |
 | 3 | Instant feedback on big trees | Streamed progress, throttled messages, virtualized file table |
 | 4 | Understand the result at a glance | KPI cards, stacked bars, language-share donut, sortable tables |
-| 5 | Keep the CLI untouched | `gui` is an optional Cargo feature; the `codelines` binary does not link egui |
+| 5 | Keep the CLI untouched | the GUI is a separate workspace crate; the `codelines` binary does not link egui |
 | 6 | Ship a real artifact | CSV / JSON / plain-text export plus clipboard copy |
 
 ### Non-goals
@@ -36,24 +36,26 @@ All user-facing text in the GUI is **English**.
 
 ### 2.1 Crate layout
 
-Before this change the whole tool was a binary crate (`main.rs` + `mod` files).
-The GUI needs the same engine, so the code was split into a library plus two
-binaries:
+The workspace has two crates: the root `codelines` crate (library + CLI) and
+the `codelines-gui` crate in `gui/`. Both depend on the same analysis library:
 
 ```
-src/
-├── lib.rs            # public API: analyzer, cli, language, output, report, scanner, gui
+Cargo.toml            # workspace root + `codelines` package
+src/                  # `codelines` crate: library + CLI
+├── lib.rs            # public API: analyzer, cli, language, output, report, scanner
 ├── main.rs           # `codelines` CLI binary (thin argument parsing + rendering)
-├── bin/
-│   └── codelines-gui.rs   # `codelines-gui` binary, compiled only with --features gui
 ├── analyzer.rs       # line classification (code / comment / mixed / blank)
 ├── language.rs       # 33 language definitions and comment rules
 ├── scanner.rs        # recursive walk, ignore lists, extension → language mapping
 ├── output.rs         # summary aggregation and CLI formatters (colored / plain / CSV)
 ├── report.rs         # shared pipeline: scan → analyze → Report (+ progress, cancel)
-├── cli.rs            # clap argument definition
-└── gui/              # (feature `gui`)
-    ├── mod.rs        # run(): window setup
+└── cli.rs            # clap argument definition
+
+gui/                  # `codelines-gui` crate
+├── Cargo.toml        # depends on `codelines` via a path dependency
+└── src/
+    ├── lib.rs        # run(): window setup + public `CodeLinesApp`
+    ├── main.rs       # `codelines-gui` binary (calls `codelines_gui::run()`)
     ├── app.rs        # application state, layout, toolbar, side panel, tabs
     ├── worker.rs     # background analysis thread + mpsc channel
     ├── charts.rs     # painted stacked bars and donut chart
@@ -66,22 +68,18 @@ src/
 ### 2.2 Dependency direction
 
 ```
-             ┌──────────────┐        ┌──────────────────┐
-             │  codelines   │        │  codelines-gui   │
-             │  (CLI bin)   │        │     (bin)        │
-             └──────┬───────┘        └────────┬─────────┘
-                    │                         │
-                    └──────────┬──────────────┘
-                               ▼
-                     ┌───────────────────┐
-                     │  codelines (lib)  │
-                     │  report / scanner │
-                     │  analyzer / …     │
-                     └───────────────────┘
-                               ▲
-                     ┌───────────────────┐
-                     │   gui modules     │  (feature = "gui")
-                     └───────────────────┘
+              ┌──────────────────┐        ┌──────────────────┐
+              │  codelines (bin) │        │  codelines-gui   │
+              │       CLI        │        │ (lib + bin crate)│
+              └────────┬─────────┘        └────────┬─────────┘
+                       │                           │
+                       └────────────┬──────────────┘
+                                    ▼
+                          ┌───────────────────┐
+                          │  codelines (lib)  │
+                          │  report / scanner │
+                          │  analyzer / …     │
+                          └───────────────────┘
 ```
 
 `report::analyze` is the single entry point for both front-ends:
@@ -94,16 +92,20 @@ pub fn analyze(
 ) -> Report;
 ```
 
-### 2.3 Cargo features
+### 2.3 Crate boundary
+
+`gui/` is a workspace member with its own `Cargo.toml`. It depends on the
+`codelines` library through a path dependency and owns all GUI dependencies:
 
 ```toml
-[features]
-default = []
-gui = ["dep:eframe", "dep:egui_extras", "dep:rfd"]
+codelines = { path = "..", version = "1.0.1" }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow"] }
+egui_extras = { version = "0.37", default-features = false }
+rfd = "0.17"
 ```
 
-`cargo build` / `cargo install` keeps producing the lean CLI. Only
-`cargo build --features gui` pulls in `eframe` (egui + glow renderer),
+There is no longer a `gui` Cargo feature: `cargo build` produces the lean CLI,
+while `cargo build -p codelines-gui` pulls in `eframe` (egui + glow renderer),
 `egui_extras` (tables) and `rfd` (native open/save dialogs).
 
 ---
@@ -359,12 +361,12 @@ cargo build --release
 ./target/release/codelines src
 
 # GUI
-cargo run --release --features gui --bin codelines-gui
-cargo run --release --features gui --bin codelines-gui -- /path/to/project
+cargo run --release -p codelines-gui
+cargo run --release -p codelines-gui -- /path/to/project
 
 # Tests
 cargo test                    # core pipeline
-cargo test --features gui     # pipeline + export formats
+cargo test -p codelines-gui   # GUI crate + export formats
 ```
 
 Optional arguments: a path passed to `codelines-gui` pre-fills the root and
