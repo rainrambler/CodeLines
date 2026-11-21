@@ -399,6 +399,11 @@ cargo test -p codelines-gui   # GUI crate + export formats
 Optional arguments: a path passed to `codelines-gui` pre-fills the root and
 starts the analysis immediately.
 
+Release builds of the GUI crate are linked as a Windows GUI-subsystem binary
+(`#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`), so
+launching the executable from Explorer shows only the application window.
+Debug builds keep the console attached for logging.
+
 ---
 
 ## 12. Future work

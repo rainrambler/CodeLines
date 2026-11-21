@@ -81,6 +81,10 @@ cargo run --release -p codelines-gui
 cargo run --release -p codelines-gui -- /path/to/project
 ```
 
+Release builds are linked with the Windows GUI subsystem, so double-clicking
+`codelines-gui.exe` opens just the app window without a console flashing up.
+Debug builds keep the console window for log output.
+
 The GUI offers:
 
 - A project picker with drag & drop, plus include/exclude filters and a searchable language selector.
