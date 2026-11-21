@@ -106,9 +106,8 @@ pub fn legend_row(ui: &mut Ui, color: Color32, label: &str, value: String) {
 
 /// KPI card: label, big value and a secondary hint.
 pub fn stat_card(ui: &mut Ui, label: &str, value: &str, hint: &str, color: Color32) {
-    let width = ui.available_width();
     theme::card(ui).show(ui, |ui| {
-        ui.set_min_size(vec2(width - 28.0, 62.0));
+        ui.set_min_size(vec2(ui.available_width(), 62.0));
         ui.vertical(|ui| {
             ui.horizontal(|ui| {
                 swatch(ui, color);

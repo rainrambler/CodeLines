@@ -167,7 +167,8 @@ pub fn lines_by_language(ui: &mut Ui, report: &Report, show_all: bool) {
             );
 
             let value_width = 92.0;
-            let bar_width = (ui.available_width() - value_width - 6.0).max(50.0);
+            let bar_width =
+                (ui.available_width() - value_width - ui.spacing().item_spacing.x).max(50.0);
             let segments = [
                 Segment {
                     label: "Code",
@@ -232,14 +233,16 @@ pub fn category_legend(ui: &mut Ui, total: &LanguageSummary) {
             ("Mixed", total.mixed_lines, theme::MIXED),
             ("Blank", total.blank_lines, theme::BLANK),
         ];
-        for (label, value, color) in entries {
+        for (index, (label, value, color)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                ui.add_space(8.0);
+            }
             super::widgets::swatch(ui, color);
             ui.label(
                 RichText::new(format!("{label} {}", format_number(value)))
                     .size(10.5)
                     .color(theme::muted(ui)),
             );
-            ui.add_space(8.0);
         }
     });
 }
@@ -405,4 +408,3 @@ fn angle_within(angle: f64, start: f64, sweep: f64) -> bool {
     }
     delta <= sweep
 }
-

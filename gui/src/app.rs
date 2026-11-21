@@ -18,6 +18,8 @@ use super::widgets::{self, format_duration, format_number, format_percent};
 use super::worker::{AnalysisWorker, WorkerMsg};
 
 const SIDE_PANEL_WIDTH: f32 = 264.0;
+/// Smallest comfortable width for a KPI card before the row wraps.
+const KPI_MIN_WIDTH: f32 = 150.0;
 const ERROR_COLOR: Color32 = Color32::from_rgb(0xE5, 0x6B, 0x6F);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -916,7 +918,31 @@ fn overview_tab(ui: &mut Ui, report: &Report, view: &mut ViewState) {
     let total = report.total();
     kpi_cards(ui, report, &total);
     ui.add_space(12.0);
+    language_charts_row(ui, report, &total, view);
 
+    ui.add_space(12.0);
+    card_ui(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Languages").size(13.0).strong());
+            ui.label(
+                RichText::new(format!("{} detected", report.summaries.len()))
+                    .size(10.0)
+                    .color(theme::muted(ui)),
+            );
+        });
+        ui.add_space(4.0);
+        let rows = table::sort_summaries(&report.summaries, view.summary_sort);
+        table::language_table(ui, &rows, &mut view.summary_sort);
+    });
+}
+
+/// Side-by-side "Lines by language" and "Language share" cards.
+fn language_charts_row(
+    ui: &mut Ui,
+    report: &Report,
+    total: &LanguageSummary,
+    view: &mut ViewState,
+) {
     ui.columns(2, |columns| {
         card_ui(&mut columns[0], |ui| {
             ui.horizontal(|ui| {
@@ -935,7 +961,7 @@ fn overview_tab(ui: &mut Ui, report: &Report, view: &mut ViewState) {
             ui.add_space(4.0);
             charts::lines_by_language(ui, report, view.show_all_languages);
             ui.add_space(6.0);
-            charts::category_legend(ui, &total);
+            charts::category_legend(ui, total);
         });
 
         card_ui(&mut columns[1], |ui| {
@@ -949,29 +975,9 @@ fn overview_tab(ui: &mut Ui, report: &Report, view: &mut ViewState) {
             charts::language_share(ui, report, 152.0);
         });
     });
-
-    ui.add_space(12.0);
-    card_ui(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Languages").size(13.0).strong());
-            ui.label(
-                RichText::new(format!("{} detected", report.summaries.len()))
-                    .size(10.0)
-                    .color(theme::muted(ui)),
-            );
-        });
-        ui.add_space(4.0);
-        let rows = table::sort_summaries(&report.summaries, view.summary_sort);
-        table::language_table(ui, &rows, &mut view.summary_sort);
-    });
 }
 
 fn kpi_cards(ui: &mut Ui, report: &Report, total: &LanguageSummary) {
-    let spacing = ui.spacing().item_spacing.x;
-    let available = ui.available_width();
-    let columns = (((available + spacing) / (150.0 + spacing)).floor() as usize).clamp(2, 6);
-    let card_width = (available - spacing * (columns as f32 - 1.0)) / columns as f32;
-
     let cards = [
         (
             "Source files",
@@ -1022,18 +1028,30 @@ fn kpi_cards(ui: &mut Ui, report: &Report, total: &LanguageSummary) {
         ),
     ];
 
-    ui.horizontal(|ui| {
-        for (label, value, hint, color) in cards {
-            ui.allocate_ui_with_layout(
-                vec2(card_width, 94.0),
-                Layout::top_down(Align::Min),
-                |ui| {
-                    ui.set_width(card_width);
-                    widgets::stat_card(ui, label, &value, &hint, color);
-                },
-            );
-        }
-    });
+    let spacing = ui.spacing().item_spacing.x;
+    let available = ui.available_width();
+    // Fit as many cards per row as possible while keeping a readable minimum
+    // width, so the row never overflows the available space.
+    let fitting = (((available + spacing) / (KPI_MIN_WIDTH + spacing)).floor() as usize)
+        .clamp(1, cards.len());
+    // Balance the cards over the rows we need instead of leaving a lone card behind.
+    let per_row = cards.len().div_ceil(cards.len().div_ceil(fitting));
+    let card_width = ((available - spacing * (per_row as f32 - 1.0)) / per_row as f32).floor();
+
+    for row in cards.chunks(per_row) {
+        ui.horizontal(|ui| {
+            for (label, value, hint, color) in row {
+                ui.allocate_ui_with_layout(
+                    vec2(card_width, 94.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                        ui.set_width(card_width);
+                        widgets::stat_card(ui, label, value, hint, *color);
+                    },
+                );
+            }
+        });
+    }
 }
 
 fn files_tab(ui: &mut Ui, report: &Report, view: &mut ViewState, actions: &mut Vec<UiAction>) {
@@ -1205,4 +1223,156 @@ fn split_list(input: &str) -> Vec<String> {
         .collect();
     values.dedup();
     values
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    /// Geometry collected from one overview layout pass.
+    struct OverviewLayout {
+        panel: egui::Rect,
+        kpi_row: egui::Rect,
+        charts_row: egui::Rect,
+        item_spacing: f32,
+        donut_center: Option<egui::Pos2>,
+    }
+
+    fn report_with_many_languages() -> Report {
+        let summaries = [
+            ("Rust", 16_732usize),
+            ("HTML", 841),
+            ("CSS", 698),
+            ("Markdown", 597),
+            ("Shell", 300),
+            ("JavaScript/TypeScript", 189),
+            ("Python", 191),
+            ("Batch", 120),
+            ("PowerShell", 98),
+            ("Vue", 100),
+        ]
+        .iter()
+        .map(|(name, code)| LanguageSummary {
+            language: (*name).to_string(),
+            file_count: 4,
+            total_lines: code * 5 / 4,
+            code_lines: *code,
+            comment_lines: 40,
+            mixed_lines: 10,
+            blank_lines: 60,
+        })
+        .collect();
+        Report {
+            summaries,
+            total_files_scanned: 51,
+            ..Default::default()
+        }
+    }
+
+    /// Lay out the overview rows the way the application does, inside a window of
+    /// the given width, and report the resulting geometry.
+    fn run_overview(width: f32) -> OverviewLayout {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx, false);
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(width, 820.0));
+        let report = report_with_many_languages();
+        let total = report.total();
+        let mut view = ViewState::default();
+        let mut panel = egui::Rect::NOTHING;
+        let mut kpi_row = egui::Rect::NOTHING;
+        let mut charts_row = egui::Rect::NOTHING;
+        let mut item_spacing = 0.0;
+
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut output = ctx.run_ui(input, |ui| {
+                egui::Panel::top("overview-top")
+                    .exact_size(54.0)
+                    .show(ui, |ui| {
+                        ui.label("toolbar");
+                    });
+                egui::Panel::bottom("overview-bottom")
+                    .exact_size(30.0)
+                    .show(ui, |ui| {
+                        ui.label("status");
+                    });
+                egui::Panel::left("overview-left")
+                    .exact_size(SIDE_PANEL_WIDTH)
+                    .resizable(false)
+                    .show(ui, |ui| {
+                        ui.label("filters");
+                    });
+                egui::CentralPanel::default().show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            panel = ui.max_rect();
+                            item_spacing = ui.spacing().item_spacing.x;
+                            kpi_row = ui.scope(|ui| kpi_cards(ui, &report, &total)).response.rect;
+                            ui.add_space(12.0);
+                            charts_row = ui
+                                .scope(|ui| language_charts_row(ui, &report, &total, &mut view))
+                                .response
+                                .rect;
+                        });
+                });
+            });
+            shapes = std::mem::take(&mut output.shapes);
+            output.drop_without_applying_deltas();
+        }
+
+        let mut donut_center = None;
+        for clipped in &shapes {
+            if let egui::Shape::Circle(circle) = &clipped.shape
+                && (circle.radius - 47.12).abs() < 1.0
+            {
+                donut_center = Some(circle.center);
+            }
+        }
+
+        OverviewLayout {
+            panel,
+            kpi_row,
+            charts_row,
+            item_spacing,
+            donut_center,
+        }
+    }
+
+    #[test]
+    fn overview_cards_stay_inside_the_panel() {
+        for width in [980.0, 1100.0, 1280.0, 1500.0] {
+            let layout = run_overview(width);
+            assert!(
+                layout.kpi_row.right() <= layout.panel.right() + 0.5,
+                "KPI row ({:?}) overflows the {width}pt wide panel ({:?})",
+                layout.kpi_row,
+                layout.panel
+            );
+            assert!(
+                layout.charts_row.right() <= layout.panel.right() + 0.5,
+                "language cards ({:?}) overflow the {width}pt wide panel ({:?})",
+                layout.charts_row,
+                layout.panel
+            );
+        }
+    }
+
+    #[test]
+    fn language_share_donut_is_centered_in_its_card() {
+        let layout = run_overview(1280.0);
+        let donut = layout.donut_center.expect("donut chart is painted");
+
+        let column_width = (layout.panel.width() - layout.item_spacing) / 2.0;
+        let card_center_x = layout.panel.left() + column_width * 1.5 + layout.item_spacing;
+        assert!(
+            (donut.x - card_center_x).abs() <= 1.0,
+            "donut center {:.1} should match the card center {card_center_x:.1}",
+            donut.x
+        );
+    }
 }
