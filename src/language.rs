@@ -365,6 +365,15 @@ impl CommentRule {
     }
 }
 
+/// Host-language region splitting strategy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddedKind {
+    /// HTML/XML-style `<script>` and `<style>` regions.
+    Html,
+    /// Markdown fenced code blocks.
+    Markdown,
+}
+
 /// Describes a supported language
 #[derive(Debug, Clone, Default)]
 pub struct Language {
@@ -380,6 +389,8 @@ pub struct Language {
     pub shebangs: Vec<&'static str>,
     /// Lowercase substrings used to disambiguate shared extensions
     pub hints: Vec<&'static str>,
+    /// Embedded-region strategy, if the language can host other languages.
+    pub embedded: Option<EmbeddedKind>,
     /// Comment rules
     pub comment_rule: CommentRule,
 }
@@ -1411,6 +1422,10 @@ fn language_definitions() -> Vec<Language> {
 fn apply_detection_metadata(languages: &mut [Language]) {
     for language in languages {
         match language.name {
+            "HTML" | "XML" | "Vue" | "Svelte" | "Astro" | "Razor" => {
+                language.embedded = Some(EmbeddedKind::Html);
+            }
+            "Markdown" => language.embedded = Some(EmbeddedKind::Markdown),
             "Python" => {
                 language.shebangs = vec!["python", "pypy", "xonsh", "uv"];
                 language.filenames = vec!["SConstruct", "SConscript"];
@@ -1836,6 +1851,132 @@ pub fn language_for_shebang(line: &str) -> Option<&'static Language> {
     registry.language_by_shebang(versionless)
 }
 
+/// Resolve a Markdown fence info string (e.g. `rust`, `ts`, `{.python}`) to a
+/// registered language. Unknown or plain-text info strings return `None`.
+pub fn language_for_info_string(info: &str) -> Option<&'static Language> {
+    let token = info
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '{' || c == '}' || c == '.')
+        .find(|part| !part.is_empty())?
+        .to_ascii_lowercase();
+    let name = match token.as_str() {
+        "rust" | "rs" => "Rust",
+        "python" | "py" | "python3" => "Python",
+        "js" | "javascript" | "jsx" | "node" | "ts" | "typescript" | "tsx" => {
+            "JavaScript/TypeScript"
+        }
+        "html" | "htm" => "HTML",
+        "xml" | "svg" | "xsl" => "XML",
+        "css" | "scss" | "sass" | "less" | "postcss" => "CSS",
+        "stylus" | "styl" => "Stylus",
+        "json" | "jsonc" => "JSONC",
+        "json5" => "JSON5",
+        "hjson" => "Hjson",
+        "yaml" | "yml" => "YAML",
+        "toml" => "TOML",
+        "sh" | "bash" | "shell" | "zsh" | "dash" | "ksh" => "Shell",
+        "fish" => "Fish",
+        "nu" | "nushell" => "Nushell",
+        "powershell" | "ps1" | "pwsh" => "PowerShell",
+        "batch" | "bat" | "cmd" => "Batch",
+        "c" | "h" | "cpp" | "c++" | "cc" | "cxx" | "hpp" => "C/C++",
+        "csharp" | "c#" | "cs" => "C#",
+        "java" => "Java",
+        "kotlin" | "kt" | "kts" => "Kotlin",
+        "scala" => "Scala",
+        "go" | "golang" => "Go",
+        "swift" => "Swift",
+        "objective-c" | "objc" | "obj-c" => "Objective-C",
+        "ruby" | "rb" => "Ruby",
+        "perl" | "pl" => "Perl",
+        "raku" | "perl6" => "Raku",
+        "php" => "PHP",
+        "lua" => "Lua",
+        "sql" => "SQL",
+        "haskell" | "hs" => "Haskell",
+        "elixir" | "ex" => "Elixir",
+        "erlang" | "erl" => "Erlang",
+        "r" => "R",
+        "julia" | "jl" => "Julia",
+        "dart" => "Dart",
+        "groovy" | "gradle" => "Groovy",
+        "crystal" => "Crystal",
+        "nim" => "Nim",
+        "zig" => "Zig",
+        "nix" => "Nix",
+        "solidity" | "sol" => "Solidity",
+        "move" => "Move",
+        "cairo" => "Cairo",
+        "verilog" | "systemverilog" | "sv" => "Verilog/SystemVerilog",
+        "vhdl" => "VHDL",
+        "ada" => "Ada",
+        "fortran" | "f90" => "Fortran",
+        "cobol" => "COBOL",
+        "sas" => "SAS",
+        "matlab" | "octave" => "MATLAB",
+        "mathematica" | "wolfram" => "Mathematica",
+        "assembly" | "asm" | "nasm" => "Assembly",
+        "gas" => "GNU Assembly",
+        "llvm" | "ll" => "LLVM IR",
+        "wat" | "wast" => "WebAssembly Text",
+        "proto" | "protobuf" => "Protocol Buffers",
+        "thrift" => "Thrift",
+        "flatbuffers" | "fbs" => "FlatBuffers",
+        "graphql" | "gql" => "GraphQL",
+        "sparql" => "SPARQL",
+        "turtle" | "ttl" => "Turtle",
+        "rego" => "Rego",
+        "hcl" | "terraform" | "tf" => "HCL/Terraform",
+        "jsonnet" | "libsonnet" => "Jsonnet",
+        "ini" => "INI",
+        "properties" => "Properties",
+        "cmake" => "CMake",
+        "make" | "makefile" => "Makefile",
+        "docker" | "dockerfile" => "Dockerfile",
+        "meson" => "Meson",
+        "starlark" | "bzl" => "Starlark",
+        "vue" => "Vue",
+        "svelte" => "Svelte",
+        "astro" => "Astro",
+        "razor" | "cshtml" => "Razor",
+        "elm" => "Elm",
+        "purescript" | "purs" => "PureScript",
+        "idris" | "idr" => "Idris",
+        "agda" => "Agda",
+        "dhall" => "Dhall",
+        "reasonml" | "reason" | "re" => "ReasonML",
+        "rescript" | "res" => "ReScript",
+        "ocaml" | "sml" => "OCaml/Standard ML",
+        "fsharp" | "f#" => "F#",
+        "haxe" => "Haxe",
+        "actionscript" | "as" => "ActionScript",
+        "vala" => "Vala",
+        "qml" => "QML",
+        "apex" => "Apex",
+        "puppet" => "Puppet",
+        "qmake" => "QMake",
+        "awk" => "AWK",
+        "tcl" => "Tcl",
+        "xquery" => "XQuery",
+        "smalltalk" => "Smalltalk",
+        "eiffel" => "Eiffel",
+        "forth" | "fth" => "Forth",
+        "coq" => "Coq",
+        "v" => "V",
+        "lisp" => "Common Lisp",
+        "clojure" | "clj" => "Clojure",
+        "scheme" | "racket" | "rkt" => "Scheme/Racket",
+        "elisp" | "emacs-lisp" => "Emacs Lisp",
+        "vb" | "visualbasic" => "Visual Basic",
+        "pascal" => "Pascal",
+        "tex" | "latex" => "TeX/LaTeX",
+        "text" | "plaintext" | "plain" | "txt" | "output" | "log" | "diff" | "patch" => {
+            return None;
+        }
+        _ => return None,
+    };
+    find_language_by_name(name)
+}
+
 /// Resolve a shared extension using content hints, then the preference table.
 ///
 /// The boolean is `true` when a content hint decided the language.
@@ -2224,5 +2365,38 @@ mod tests {
             resolve_ambiguous_extension(".m", &candidates_for_extension(".m"), "x = 1;").unwrap();
         assert_eq!(language.name, "Objective-C");
         assert!(!hinted, "no hint should fall back to the preference table");
+    }
+
+    #[test]
+    fn resolves_fence_info_strings() {
+        for (info, expected) in [
+            ("rust", "Rust"),
+            ("rs", "Rust"),
+            ("python", "Python"),
+            ("py", "Python"),
+            ("ts", "JavaScript/TypeScript"),
+            ("jsx", "JavaScript/TypeScript"),
+            ("{.python}", "Python"),
+            ("bash", "Shell"),
+            ("sh", "Shell"),
+            ("c++", "C/C++"),
+            ("cs", "C#"),
+            ("yml", "YAML"),
+            ("matlab", "MATLAB"),
+            ("systemverilog", "Verilog/SystemVerilog"),
+            ("proto", "Protocol Buffers"),
+            ("ocaml", "OCaml/Standard ML"),
+        ] {
+            let language =
+                language_for_info_string(info).unwrap_or_else(|| panic!("no language for {info}"));
+            assert_eq!(language.name, expected, "wrong language for {info}");
+        }
+
+        for info in ["", "text", "plaintext", "console", "unknown-language"] {
+            assert!(
+                language_for_info_string(info).is_none(),
+                "{info} should not map to a language"
+            );
+        }
     }
 }

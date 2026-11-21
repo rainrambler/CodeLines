@@ -293,6 +293,15 @@ pub fn print_supported_languages() {
                 lang.ambiguous_extensions.join(", ")
             ));
         }
+        match lang.embedded {
+            Some(language::EmbeddedKind::Html) => {
+                details.push("embedded: script/style blocks".to_string());
+            }
+            Some(language::EmbeddedKind::Markdown) => {
+                details.push("embedded: fenced code blocks".to_string());
+            }
+            None => {}
+        }
         if !details.is_empty() {
             println!("  {:<24} {}", "", details.join("; "));
         }

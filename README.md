@@ -8,6 +8,7 @@ Count lines of code, comments, and blanks across your entire project — intelli
 
 - **132 Languages Supported** — Rust, C/C++, C#, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, PHP, Lua, Haskell, SQL, HTML/CSS, Markdown, plus CUDA, OpenCL, GLSL/HLSL/Metal, Verilog/VHDL, Solidity, Move, Zig, Nim, Nix, HCL/Terraform, PowerShell, Dart, Elixir, Erlang, Julia, Fortran, COBOL, SAS, Ada, Vue, Svelte and many more. Run `codelines --list` for the full list.
 - **File-Name & Shebang Detection** — recognizes `Makefile`, `Dockerfile`, `CMakeLists.txt`, `BUILD`/`WORKSPACE`, `Rakefile`, `Gemfile`, `Jenkinsfile` and extensionless scripts via `#!` lines. Ambiguous extensions (`.m`, `.v`, `.pl`, `.fs`, `.cl`, `.cls`, `.pp`, `.pro`) are resolved by content hints with a documented preference table.
+- **Embedded Language Awareness** — HTML/XML, Vue, Svelte, Astro and Razor files parse `<script>` blocks with JavaScript/TypeScript rules and `<style>` blocks with CSS or Stylus rules. Markdown fenced code blocks (``` and `~~~`) are parsed by their info string (`rust`, `python`, `ts`, `c++`, …), with a neutral fallback for unknown fences.
 - **Smart Comment Detection** — Distinguishes line comments (`//`, `#`, `--`, `%`, etc.) and block comments (`/* */`, `""" """`, `<!-- -->`, `{- -}`, etc.) per language, including **nested blocks** (Rust, Kotlin, Scala, Swift, D, OCaml, Haskell family) and multiple block syntaxes (Pascal, D, Lua).
 - **String-Aware Parsing** — Correctly ignores comment-like markers inside raw/verbatim strings (`r#"..."#`, C++ `R"delim(...)delim"`, `@"..."`, `"""..."""`), character literals, heredocs (Shell, PHP, Ruby, Perl) and PowerShell here-strings. Rust lifetimes (`&'a str`), Verilog literals (`4'b1010`) and Ada/VHDL attributes are not treated as strings.
 - **Line Classification** — Each line is classified as: **code**, **comment**, **mixed** (code + comment), or **blank**.
@@ -15,7 +16,7 @@ Count lines of code, comments, and blanks across your entire project — intelli
 - **`.gitignore` Aware** — Honours `.gitignore` files (including nested ones and those in parent directories); disable with `--no-gitignore` or the GUI checkbox.
 - **Flexible Filtering** — Filter by language, exclude specific directories or files.
 - **Multiple Output Formats** — Colored terminal output, plain text (pipe-friendly), or CSV.
-- **Verbose & Per-File Modes** — Drill down into detailed per-file statistics or see a compact summary.
+- **Verbose & Per-File Modes** — Drill down into detailed per-file statistics, including embedded `<script>`/`<style>` and Markdown fence regions, or see a compact summary.
 - **Ratio Calculations** — Code% and comment% for each language and overall totals.
 - **Desktop GUI** — a separate crate (`codelines-gui`) with live progress, charts, sortable tables and CSV/JSON export.
 
@@ -129,7 +130,7 @@ Total                      16       2100       1500        330        270    71.
 
 1. **Detect** — Recursively walks directories (honouring `.gitignore`) and resolves each file by exact name/prefix (`Makefile`, `Dockerfile`, `CMakeLists.txt`, `BUILD`), then by extension. Shared extensions (`.m`, `.v`, `.pl`, `.fs`, `.cl`, `.cls`, `.pp`, `.pro`) use content hints and a preference table; extensionless files fall back to their `#!` line.
 2. **Read** — Loads file contents from disk.
-3. **Analyze** — Parses each line with language-specific comment rules, tracking block comment and multi-line string state across lines.
+3. **Analyze** — Parses each line with language-specific comment rules, tracking block comment and multi-line string state across lines. HTML-like hosts split `<script>`/`<style>` blocks into their own syntaxes, and Markdown fenced code is classified by its info string; region boundaries never leak parser state into the next region.
 4. **Aggregate** — Sums statistics per language and globally.
 5. **Output** — Renders results in the chosen format (colored table, plain text, or CSV).
 

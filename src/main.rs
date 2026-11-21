@@ -85,6 +85,37 @@ fn main() {
                     file.stats.mixed_lines,
                     file.stats.blank_lines,
                 );
+                for region in &file.regions {
+                    println!(
+                        "      embedded: {} ({}) lines {}-{}",
+                        region.kind, region.language, region.start_line, region.end_line
+                    );
+                }
+            }
+            println!();
+        }
+    }
+
+    if args.verbose && !args.csv {
+        let embedded: Vec<_> = report
+            .files
+            .iter()
+            .filter(|file| !file.regions.is_empty())
+            .collect();
+        if !embedded.is_empty() {
+            println!("{}", "Embedded source regions:".bold());
+            for file in embedded {
+                let labels: Vec<String> = file
+                    .regions
+                    .iter()
+                    .map(|region| {
+                        format!(
+                            "{} ({}, {}-{})",
+                            region.kind, region.language, region.start_line, region.end_line
+                        )
+                    })
+                    .collect();
+                println!("  {}: {}", file.path.to_string_lossy(), labels.join(", "));
             }
             println!();
         }

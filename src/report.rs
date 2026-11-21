@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::analyzer::{CompiledSyntax, LineStats, analyze_content_compiled};
+use crate::analyzer::{
+    CompiledSyntax, LineStats, RegionInfo, analyze_content_compiled, analyze_embedded,
+};
 use crate::language;
 use crate::output::{LanguageSummary, build_summaries, total_summary};
 use crate::scanner::{read_file_content, scan_directory_with_progress};
@@ -51,6 +53,8 @@ pub struct FileEntry {
     pub path: PathBuf,
     pub language: String,
     pub stats: LineStats,
+    /// Embedded source regions (HTML script/style, Markdown fences).
+    pub regions: Vec<RegionInfo>,
 }
 
 /// Progress notification emitted while [`analyze`] runs.
@@ -175,12 +179,16 @@ pub fn analyze(
 
             match read_file_content(path) {
                 Ok(content) => {
-                    let stats = analyze_content_compiled(&content, &syntax);
+                    let (stats, regions) = match lang_def.embedded {
+                        Some(kind) => analyze_embedded(&content, &syntax, kind),
+                        None => (analyze_content_compiled(&content, &syntax), Vec::new()),
+                    };
                     lang_stats += stats.clone();
                     files.push(FileEntry {
                         path: path.clone(),
                         language: lang_name.clone(),
                         stats,
+                        regions,
                     });
                 }
                 Err(message) => warnings.push(message),
@@ -476,6 +484,53 @@ mod tests {
                 .iter()
                 .all(|warning| !warning.contains("ambiguous extension"))
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn records_embedded_regions() {
+        let dir = std::env::temp_dir().join(format!("codelines-embedded-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("App.vue"),
+            "<template>\n  <div />\n</template>\n<script lang=\"ts\">\n// comment\nconst x = 1;\n</script>\n<style>\n/* css */\nbody { color: red; }\n</style>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("notes.md"),
+            "# Notes\n\n```rust\n// comment\nlet x = 1;\n```\n",
+        )
+        .unwrap();
+
+        let options = ScanOptions {
+            paths: vec![dir.clone()],
+            ..Default::default()
+        };
+        let report = analyze(&options, None, |_| {});
+
+        let vue = report
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("App.vue"))
+            .expect("Vue file");
+        assert_eq!(vue.language, "Vue");
+        assert_eq!(vue.regions.len(), 2);
+        assert_eq!(vue.regions[0].kind, "script");
+        assert_eq!(vue.regions[0].language, "JavaScript/TypeScript");
+        assert_eq!(vue.regions[1].kind, "style");
+        assert_eq!(vue.regions[1].language, "CSS");
+
+        let markdown = report
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("notes.md"))
+            .expect("Markdown file");
+        assert_eq!(markdown.language, "Markdown");
+        assert_eq!(markdown.regions.len(), 1);
+        assert_eq!(markdown.regions[0].kind, "fence");
+        assert_eq!(markdown.regions[0].language, "Rust");
 
         fs::remove_dir_all(&dir).unwrap();
     }

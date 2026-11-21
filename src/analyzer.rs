@@ -1,8 +1,10 @@
 /// Analyzer module: parses file content line by line, classifying each line
 /// as code, comment, blank, or mixed (code + comment).
+use std::collections::HashMap;
+
 use crate::language::{
-    BlockComment, BoundaryAfter, CharLiteral, CommentRule, Heredoc, LineComment, LineScope,
-    RawString, RegionComment, StringEscape, StringLiteral,
+    self, BlockComment, BoundaryAfter, CharLiteral, CommentRule, EmbeddedKind, Heredoc,
+    LineComment, LineScope, RawString, RegionComment, StringEscape, StringLiteral,
 };
 
 /// Per-file line-level statistics result
@@ -44,7 +46,27 @@ impl std::ops::AddAssign for LineStats {
     }
 }
 
+/// Classification of a single line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    Code,
+    Comment,
+    Mixed,
+    Blank,
+}
+
 impl LineStats {
+    /// Record one classified line.
+    pub fn record(&mut self, kind: LineKind) {
+        self.total_lines += 1;
+        match kind {
+            LineKind::Code => self.code_lines += 1,
+            LineKind::Comment => self.comment_lines += 1,
+            LineKind::Mixed => self.mixed_lines += 1,
+            LineKind::Blank => self.blank_lines += 1,
+        }
+    }
+
     /// Effective code lines (pure code + mixed)
     pub fn effective_code_lines(&self) -> usize {
         self.code_lines + self.mixed_lines
@@ -166,28 +188,26 @@ pub fn analyze_content_compiled(content: &str, syntax: &CompiledSyntax) -> LineS
     let mut state = ParseState::default();
 
     for raw_line in content.lines() {
-        stats.total_lines += 1;
-
         if raw_line.trim().is_empty() {
-            stats.blank_lines += 1;
+            stats.record(LineKind::Blank);
             continue;
         }
 
         let (has_code, has_comment, new_state) = parse_line(raw_line, syntax, &state);
         state = new_state;
-
-        if has_code && has_comment {
-            stats.mixed_lines += 1;
-        } else if has_comment {
-            stats.comment_lines += 1;
-        } else if has_code {
-            stats.code_lines += 1;
-        } else {
-            stats.blank_lines += 1;
-        }
+        stats.record(classify(has_code, has_comment));
     }
 
     stats
+}
+
+fn classify(has_code: bool, has_comment: bool) -> LineKind {
+    match (has_code, has_comment) {
+        (true, true) => LineKind::Mixed,
+        (true, false) => LineKind::Code,
+        (false, true) => LineKind::Comment,
+        (false, false) => LineKind::Blank,
+    }
 }
 
 /// Parse one line of text, returning (has_code, has_comment, new_state)
@@ -734,6 +754,468 @@ fn starts_with_ignore_case(bytes: &[u8], pos: usize, target: &str) -> bool {
         })
 }
 
+/// A contiguous block of embedded code inside a host file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionInfo {
+    pub kind: String,
+    pub language: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// Analyze a file whose host language contains embedded source regions, such as
+/// `<script>`/`<style>` blocks in HTML or fenced code blocks in Markdown.
+pub fn analyze_embedded(
+    content: &str,
+    host_syntax: &CompiledSyntax,
+    kind: EmbeddedKind,
+) -> (LineStats, Vec<RegionInfo>) {
+    match kind {
+        EmbeddedKind::Html => analyze_html(content, host_syntax),
+        EmbeddedKind::Markdown => analyze_markdown(content, host_syntax),
+    }
+}
+
+struct SyntaxCache {
+    syntaxes: HashMap<&'static str, CompiledSyntax>,
+    states: HashMap<&'static str, ParseState>,
+    host_state: ParseState,
+}
+
+impl SyntaxCache {
+    fn new() -> Self {
+        Self {
+            syntaxes: HashMap::new(),
+            states: HashMap::new(),
+            host_state: ParseState::default(),
+        }
+    }
+
+    fn reset_embedded(&mut self, language_name: &'static str) {
+        self.states.remove(language_name);
+    }
+
+    fn host_can_start_script(&self) -> bool {
+        // Only block/comment state suppresses tag detection. String state in
+        // markup is often a false positive (for example an apostrophe in text)
+        // and must not hide a later <script> block.
+        !matches!(self.host_state.mode, Mode::Block { .. })
+    }
+
+    fn analyze_host(&mut self, line: &str, host_syntax: &CompiledSyntax) -> LineKind {
+        if line.trim().is_empty() {
+            return LineKind::Blank;
+        }
+        let (has_code, has_comment, new_state) = parse_line(line, host_syntax, &self.host_state);
+        self.host_state = new_state;
+        classify(has_code, has_comment)
+    }
+
+    fn analyze_embedded(&mut self, line: &str, language_name: &'static str) -> LineKind {
+        if line.trim().is_empty() {
+            return LineKind::Blank;
+        }
+        let syntax = self.syntaxes.entry(language_name).or_insert_with(|| {
+            language::find_language_by_name(language_name)
+                .map(|definition| CompiledSyntax::new(&definition.comment_rule))
+                .unwrap_or_else(|| CompiledSyntax::new(&CommentRule::default()))
+        });
+        let state = self.states.entry(language_name).or_default();
+        let (has_code, has_comment, new_state) = parse_line(line, syntax, state);
+        *state = new_state;
+        classify(has_code, has_comment)
+    }
+}
+
+struct OpenRegion {
+    tag: &'static str,
+    kind: &'static str,
+    language: &'static str,
+    start_line: usize,
+}
+
+impl OpenRegion {
+    fn into_info(self, end_line: usize) -> RegionInfo {
+        RegionInfo {
+            kind: self.kind.to_string(),
+            language: self.language.to_string(),
+            start_line: self.start_line,
+            end_line,
+        }
+    }
+}
+
+struct OpeningTag {
+    tag: &'static str,
+    kind: &'static str,
+    language: &'static str,
+    has_content: bool,
+    has_close: bool,
+    self_closing: bool,
+}
+
+fn analyze_html(content: &str, host_syntax: &CompiledSyntax) -> (LineStats, Vec<RegionInfo>) {
+    let mut cache = SyntaxCache::new();
+    let mut stats = LineStats::default();
+    let mut regions = Vec::new();
+    let mut open: Option<OpenRegion> = None;
+    let mut last_line = 0;
+
+    for (index, line) in content.lines().enumerate() {
+        let line_number = index + 1;
+        last_line = line_number;
+
+        if let Some(current) = open.as_ref() {
+            stats.record(cache.analyze_embedded(line, current.language));
+            if contains_closing_tag(line, current.tag) {
+                regions.push(RegionInfo {
+                    kind: current.kind.to_string(),
+                    language: current.language.to_string(),
+                    start_line: current.start_line,
+                    end_line: line_number,
+                });
+                cache.reset_embedded(current.language);
+                open = None;
+            }
+            continue;
+        }
+
+        if let Some(tag) = cache
+            .host_can_start_script()
+            .then(|| find_opening_tag(line))
+            .flatten()
+        {
+            cache.reset_embedded(tag.language);
+            let line_kind = if tag.has_content {
+                cache.analyze_embedded(line, tag.language)
+            } else {
+                cache.analyze_host(line, host_syntax)
+            };
+            stats.record(line_kind);
+
+            if tag.has_close {
+                if tag.has_content && !tag.self_closing {
+                    regions.push(RegionInfo {
+                        kind: tag.kind.to_string(),
+                        language: tag.language.to_string(),
+                        start_line: line_number,
+                        end_line: line_number,
+                    });
+                }
+            } else if !tag.self_closing {
+                open = Some(OpenRegion {
+                    tag: tag.tag,
+                    kind: tag.kind,
+                    language: tag.language,
+                    start_line: line_number,
+                });
+            }
+            continue;
+        }
+
+        stats.record(cache.analyze_host(line, host_syntax));
+    }
+
+    if let Some(current) = open {
+        let end_line = last_line.max(current.start_line);
+        regions.push(current.into_info(end_line));
+    }
+
+    (stats, regions)
+}
+
+fn analyze_markdown(content: &str, host_syntax: &CompiledSyntax) -> (LineStats, Vec<RegionInfo>) {
+    let mut cache = SyntaxCache::new();
+    let mut stats = LineStats::default();
+    let mut regions = Vec::new();
+    let mut open: Option<FenceRegion> = None;
+    let mut last_line = 0;
+
+    for (index, line) in content.lines().enumerate() {
+        let line_number = index + 1;
+        last_line = line_number;
+
+        if let Some(fence) = open.as_ref() {
+            if is_fence_close(line, fence.marker, fence.length) {
+                stats.record(LineKind::Code);
+                regions.push(RegionInfo {
+                    kind: "fence".to_string(),
+                    language: fence.language.to_string(),
+                    start_line: fence.start_line,
+                    end_line: line_number,
+                });
+                cache.reset_embedded(fence.language);
+                open = None;
+            } else {
+                stats.record(cache.analyze_embedded(line, fence.language));
+            }
+            continue;
+        }
+
+        if let Some(fence) = fence_open(line) {
+            cache.reset_embedded(fence.language);
+            stats.record(LineKind::Code);
+            open = Some(FenceRegion {
+                marker: fence.marker,
+                length: fence.length,
+                language: fence.language,
+                start_line: line_number,
+            });
+            continue;
+        }
+
+        stats.record(cache.analyze_host(line, host_syntax));
+    }
+
+    if let Some(fence) = open {
+        regions.push(RegionInfo {
+            kind: "fence".to_string(),
+            language: fence.language.to_string(),
+            start_line: fence.start_line,
+            end_line: last_line.max(fence.start_line),
+        });
+    }
+
+    (stats, regions)
+}
+
+struct FenceRegion {
+    marker: char,
+    length: usize,
+    language: &'static str,
+    start_line: usize,
+}
+
+struct FenceOpen {
+    marker: char,
+    length: usize,
+    language: &'static str,
+}
+
+fn fence_open(line: &str) -> Option<FenceOpen> {
+    let (marker, run) = fence_marker(line)?;
+    let length = run.len();
+    if length < 3 {
+        return None;
+    }
+    let info = line[run.end..].trim();
+    let language = language::language_for_info_string(info)
+        .map(|definition| definition.name)
+        .unwrap_or("Text");
+    Some(FenceOpen {
+        marker,
+        length,
+        language,
+    })
+}
+
+fn fence_marker(line: &str) -> Option<(char, std::ops::Range<usize>)> {
+    let leading = line.len() - line.trim_start_matches(' ').len();
+    if leading > 3 {
+        return None;
+    }
+    let rest = &line[leading..];
+    let marker = rest.chars().next()?;
+    if marker != '`' && marker != '~' {
+        return None;
+    }
+    let length = rest.chars().take_while(|c| *c == marker).count();
+    let end = leading + length;
+    if marker == '`' && rest[length..].contains('`') {
+        return None;
+    }
+    Some((marker, leading..end))
+}
+
+fn is_fence_close(line: &str, marker: char, minimum: usize) -> bool {
+    let leading = line.len() - line.trim_start_matches(' ').len();
+    if leading > 3 {
+        return false;
+    }
+    let rest = &line[leading..];
+    let run = rest.chars().take_while(|c| *c == marker).count();
+    run >= minimum && rest[run..].trim().is_empty()
+}
+
+fn find_opening_tag(line: &str) -> Option<OpeningTag> {
+    let lower = line.to_ascii_lowercase();
+    let mut candidates = Vec::new();
+    for tag in ["script", "style"] {
+        if let Some(index) = find_tag_start(&lower, tag) {
+            candidates.push((index, tag));
+        }
+    }
+    candidates.sort_by_key(|(index, _)| *index);
+    candidates
+        .into_iter()
+        .find_map(|(index, tag)| parse_opening_tag(line, &lower, index, tag))
+}
+
+fn find_tag_start(lower: &str, tag: &str) -> Option<usize> {
+    let needle = format!("<{tag}");
+    let mut from = 0;
+    while let Some(offset) = lower[from..].find(&needle) {
+        let index = from + offset;
+        let boundary = lower.as_bytes().get(index + needle.len()).copied();
+        if boundary.is_none_or(|byte| byte.is_ascii_whitespace() || byte == b'>' || byte == b'/') {
+            return Some(index);
+        }
+        from = index + needle.len();
+    }
+    None
+}
+
+fn parse_opening_tag(
+    line: &str,
+    lower: &str,
+    index: usize,
+    tag: &'static str,
+) -> Option<OpeningTag> {
+    let relative_end = lower[index..].find('>')?;
+    let end = index + relative_end;
+    let tag_text = &lower[index..=end];
+    let language = tag_language(tag, tag_text)?;
+    let self_closing = tag_text.trim_end().ends_with("/>");
+    let after = &line[end + 1..];
+    let close_marker = format!("</{tag}");
+    let close_offset = after.to_ascii_lowercase().find(&close_marker);
+    let inner = match close_offset {
+        Some(offset) => &after[..offset],
+        None => after,
+    };
+    Some(OpeningTag {
+        tag,
+        kind: tag,
+        language,
+        has_content: !inner.trim().is_empty(),
+        has_close: close_offset.is_some(),
+        self_closing,
+    })
+}
+
+fn tag_language(tag: &str, tag_text: &str) -> Option<&'static str> {
+    let lang = attribute_value(tag_text, "lang");
+    if tag == "style" {
+        if attribute_value(tag_text, "type").as_deref() == Some("text/stylus") {
+            return Some("Stylus");
+        }
+        return Some(match lang.as_deref() {
+            Some("stylus") => "Stylus",
+            _ => "CSS",
+        });
+    }
+
+    if let Some(lang) = lang {
+        return match lang.as_str() {
+            "ts" | "typescript" | "tsx" | "js" | "javascript" | "jsx" => {
+                Some("JavaScript/TypeScript")
+            }
+            _ => None,
+        };
+    }
+
+    if let Some(kind) = attribute_value(tag_text, "type") {
+        let kind = kind.split(';').next().unwrap_or_default().trim();
+        return match kind {
+            "module"
+            | "text/javascript"
+            | "application/javascript"
+            | "text/ecmascript"
+            | "application/ecmascript"
+            | "text/typescript"
+            | "application/typescript" => Some("JavaScript/TypeScript"),
+            _ => None,
+        };
+    }
+
+    Some("JavaScript/TypeScript")
+}
+
+fn attribute_value(tag_text: &str, name: &str) -> Option<String> {
+    let bytes = tag_text.as_bytes();
+    let mut cursor = 0;
+
+    while cursor < bytes.len()
+        && !bytes[cursor].is_ascii_whitespace()
+        && bytes[cursor] != b'>'
+        && bytes[cursor] != b'/'
+    {
+        cursor += 1;
+    }
+
+    while cursor < bytes.len() {
+        while cursor < bytes.len() && (bytes[cursor].is_ascii_whitespace() || bytes[cursor] == b'/')
+        {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() || bytes[cursor] == b'>' {
+            break;
+        }
+
+        let name_start = cursor;
+        while cursor < bytes.len()
+            && !bytes[cursor].is_ascii_whitespace()
+            && bytes[cursor] != b'='
+            && bytes[cursor] != b'>'
+            && bytes[cursor] != b'/'
+        {
+            cursor += 1;
+        }
+        let attribute_name = &tag_text[name_start..cursor];
+
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if bytes.get(cursor) != Some(&b'=') {
+            continue;
+        }
+        cursor += 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+
+        let (value_start, value_end) = match bytes.get(cursor).copied() {
+            Some(quote @ (b'"' | b'\'')) => {
+                cursor += 1;
+                let start = cursor;
+                while cursor < bytes.len() && bytes[cursor] != quote {
+                    cursor += 1;
+                }
+                let end = cursor;
+                if cursor < bytes.len() {
+                    cursor += 1;
+                }
+                (start, end)
+            }
+            Some(_) => {
+                let start = cursor;
+                while cursor < bytes.len()
+                    && !bytes[cursor].is_ascii_whitespace()
+                    && bytes[cursor] != b'>'
+                {
+                    cursor += 1;
+                }
+                (start, cursor)
+            }
+            None => break,
+        };
+
+        if attribute_name.eq_ignore_ascii_case(name) {
+            return Some(tag_text[value_start..value_end].trim().to_ascii_lowercase());
+        }
+    }
+
+    None
+}
+
+fn contains_closing_tag(line: &str, tag: &str) -> bool {
+    let bytes = line.as_bytes();
+    let tag = tag.as_bytes();
+    bytes.windows(2 + tag.len()).any(|window| {
+        window[0] == b'<' && window[1] == b'/' && window[2..].eq_ignore_ascii_case(tag)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,5 +1682,163 @@ def hello():
         let stats = analyze_content("// 中文注释\nlet s = \"中文 // 不是注释\";\n", &rule);
         assert_eq!(stats.comment_lines, 1);
         assert_eq!(stats.code_lines, 1);
+    }
+
+    #[test]
+    fn test_html_script_and_style_regions() {
+        let content = "<html>\n<script>\n// comment\nconst x = 1;\n</script>\n<style>\n/* css */\nbody { color: red; }\n</style>\n</html>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+
+        assert_eq!(
+            regions,
+            vec![
+                RegionInfo {
+                    kind: "script".into(),
+                    language: "JavaScript/TypeScript".into(),
+                    start_line: 2,
+                    end_line: 5,
+                },
+                RegionInfo {
+                    kind: "style".into(),
+                    language: "CSS".into(),
+                    start_line: 6,
+                    end_line: 9,
+                },
+            ]
+        );
+        assert_eq!(stats.comment_lines, 2);
+        assert_eq!(stats.code_lines, 8);
+    }
+
+    #[test]
+    fn test_vue_script_with_lang_attribute() {
+        let content = "<template>\n  <div>{{ x }}</div>\n</template>\n<script lang=\"ts\">\n// ts comment\nconst x: number = 1;\n</script>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].language, "JavaScript/TypeScript");
+        assert_eq!((regions[0].start_line, regions[0].end_line), (4, 7));
+        assert_eq!(stats.comment_lines, 1);
+    }
+
+    #[test]
+    fn test_html_inline_script_region() {
+        let content = "<script>const x = 1;</script>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (1, 1));
+        assert_eq!(stats.code_lines, 1);
+    }
+
+    #[test]
+    fn test_html_script_inside_comment_is_not_a_region() {
+        let content =
+            "<!--\n<script>\n// commented out\n</script>\n-->\n<script>\n// real\n</script>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (6, 8));
+        assert_eq!(stats.comment_lines, 6);
+    }
+
+    #[test]
+    fn test_html_apostrophe_does_not_hide_later_script() {
+        let content = "<p>It's fine</p>\n<script>\n// comment\n</script>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (_, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (2, 4));
+    }
+
+    #[test]
+    fn test_html_non_javascript_script_is_not_embedded() {
+        let content = "<script type=\"application/json\">\n{\"a\": 1}\n</script>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (_, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn test_html_attributes_do_not_match_inside_values() {
+        let content = "<script data-note=\"lang=ts\" type=\"application/json\">\n{}\n</script>\n";
+        let host = CompiledSyntax::new(&html_rule());
+        let (_, regions) = analyze_embedded(content, &host, EmbeddedKind::Html);
+        assert!(regions.is_empty());
+    }
+
+    #[test]
+    fn test_markdown_fenced_code_blocks() {
+        let content = "# Title\n\n```rust\n// comment\nlet x = 1;\n```\n\n~~~python\n# python comment\nprint(1)\n~~~\n";
+        let host = CompiledSyntax::new(&CommentRule::default());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Markdown);
+
+        assert_eq!(
+            regions,
+            vec![
+                RegionInfo {
+                    kind: "fence".into(),
+                    language: "Rust".into(),
+                    start_line: 3,
+                    end_line: 6,
+                },
+                RegionInfo {
+                    kind: "fence".into(),
+                    language: "Python".into(),
+                    start_line: 8,
+                    end_line: 11,
+                },
+            ]
+        );
+        assert_eq!(stats.code_lines, 7);
+        assert_eq!(stats.comment_lines, 2);
+        assert_eq!(stats.blank_lines, 2);
+    }
+
+    #[test]
+    fn test_markdown_unknown_fence_language() {
+        let content = "```\ncode\n```\n";
+        let host = CompiledSyntax::new(&CommentRule::default());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Markdown);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].language, "Text");
+        assert_eq!(stats.code_lines, 3);
+    }
+
+    #[test]
+    fn test_markdown_fence_not_closed_by_other_marker() {
+        let content = "```rust\nlet x = 1;\n~~~\n```\n";
+        let host = CompiledSyntax::new(&CommentRule::default());
+        let (_, regions) = analyze_embedded(content, &host, EmbeddedKind::Markdown);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (1, 4));
+    }
+
+    #[test]
+    fn test_embedded_state_resets_between_fences() {
+        let content = "```rust\n/* unterminated\n```\n\n```rust\nlet x = 1;\n```\n";
+        let host = CompiledSyntax::new(&CommentRule::default());
+        let (stats, regions) = analyze_embedded(content, &host, EmbeddedKind::Markdown);
+
+        assert_eq!(regions.len(), 2);
+        assert_eq!(stats.comment_lines, 1);
+        assert_eq!(stats.code_lines, 5);
+    }
+
+    #[test]
+    fn test_markdown_unclosed_fence_runs_to_eof() {
+        let content = "```rust\nlet x = 1;\n";
+        let host = CompiledSyntax::new(&CommentRule::default());
+        let (_, regions) = analyze_embedded(content, &host, EmbeddedKind::Markdown);
+
+        assert_eq!(regions.len(), 1);
+        assert_eq!((regions[0].start_line, regions[0].end_line), (1, 2));
     }
 }

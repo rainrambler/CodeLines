@@ -44,8 +44,8 @@ Cargo.toml            # workspace root + `codelines` package
 src/                  # `codelines` crate: library + CLI
 ├── lib.rs            # public API: analyzer, cli, language, output, report, scanner
 ├── main.rs           # `codelines` CLI binary (thin argument parsing + rendering)
-├── analyzer.rs       # line classification (code / comment / mixed / blank)
-├── language.rs       # 132 language definitions, registry and detection metadata
+├── analyzer.rs       # line classification + embedded HTML/Markdown region splitting
+├── language.rs       # 132 language definitions, registry, detection + embedded metadata
 ├── scanner.rs        # recursive walk, ignore lists, filename/shebang/ambiguity detection
 ├── output.rs         # summary aggregation and CLI formatters (colored / plain / CSV)
 ├── report.rs         # shared pipeline: scan → analyze → Report (+ progress, cancel)
@@ -346,9 +346,9 @@ when one of those changes.
 | Format | Content | Notes |
 |--------|---------|-------|
 | `codelines-summary.csv` | Language summaries | Byte-identical to `codelines --csv` (shared formatter) |
-| `codelines-files.csv` | Per-file rows | Path and language are CSV-quoted when needed |
-| `codelines-report.txt` | Plain table + metadata + per-file sections | Same layout as `codelines --plain --files` |
-| `codelines-report.json` | totals, languages, files, unknown extensions, warnings | Hand-written JSON with full string escaping, stable key order |
+| `codelines-files.csv` | Per-file rows | Path and language are CSV-quoted when needed; columns unchanged |
+| `codelines-report.txt` | Plain table + metadata + per-file sections | Same layout as `codelines --plain --files`; embedded regions are listed under their file |
+| `codelines-report.json` | totals, languages, files, unknown extensions, warnings | Hand-written JSON with full string escaping, stable key order; each file has an additive `regions` array |
 
 A save dialog is provided by `rfd`; failures surface as a toast.
 

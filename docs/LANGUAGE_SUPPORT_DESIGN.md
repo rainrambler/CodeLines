@@ -1,6 +1,6 @@
 # CodeLines Language Support — Design
 
-Status: **Phases 1–3 and Phase 2b implemented** (132 languages). Phases 4–5 are
+Status: **Phases 1–4 and Phase 2b implemented** (132 languages). Phase 5 is
 proposed here and not yet implemented.
 
 This document describes how CodeLines grows from “a fixed list of languages with
@@ -55,7 +55,7 @@ paths ──► scanner::scan_directory_with_progress ──► files_by_languag
              └─────────────────────► analyzer::CompiledSyntax (once per language)
                                                  │
                                                  ▼
-                    analyzer::analyze_content_compiled(&str, &CompiledSyntax) ──► LineStats
+       analyzer::analyze_content_compiled / analyze_embedded ──► LineStats + RegionInfo
                                                  │
                                                  ▼
                          output::build_summaries ──► Report ──► CLI / GUI
@@ -73,20 +73,25 @@ Key properties:
   first, and is built once per language by `report::analyze`.
 - `analyze_content_compiled` keeps an explicit `Mode` across lines: normal,
   block (with nesting depth), string, region or heredoc.
+- `analyze_embedded` splits HTML-like and Markdown hosts into regions and
+  feeds each region through the host or embedded language syntax.
 - The GUI calls `languages()` and no longer rebuilds the language list per
   frame.
 
 Phase 1 extended the registry only. Phase 2 replaced the analyzer internals.
 Phase 3 added cached lookup tables, filename/shebang detection and ambiguity
-resolution. Phases 4–5 are still future work.
+resolution. Phase 4 added embedded regions for HTML-like hosts and Markdown.
+Phase 5 remains future work.
 
 ---
 
 ## 3. Capability gaps
 
-The table records the gaps that motivated Phases 1–3. **Phase 2 closed gaps
-1–8 and 12; Phase 3 closed gaps 9–10 and completed 14** (static registry).
-Gaps 11 (embedded languages) and 13 (docstring policy) remain open.
+The table records the gaps that motivated Phases 1–4. **Phase 2 closed gaps
+1–8 and 12; Phase 3 closed gaps 9–10 and completed 14** (static registry);
+**Phase 4 closed gap 11 for HTML/XML, Vue/Svelte/Astro/Razor and Markdown**.
+Gap 13 (docstring policy) remains open, and other template families (Jupyter,
+ERB/EJS, Haml/Slim, Blade, MDX) are future embedded-region extensions.
 
 Each gap below is a concrete correctness bug or a hard blocker for a new
 language.
@@ -356,13 +361,48 @@ classifying each region with its own rule set:
 |------|---------|
 | HTML/XML | markup + `<!-- -->`; `<script>` → JS/TS; `<style>` → CSS |
 | Vue/Svelte/Astro | `<template>` → markup; `<script>` → JS/TS; `<style>` → CSS |
-| JSX/TSX | JS/TS rules already cover comments; tag markup uses JS literals |
+| Razor/Blazor | markup + `@* *@`; `<script>`/`<style>` regions |
 | Markdown | prose; fenced blocks → language by info string; inline code ignored |
-| Razor/Blazor | markup + `@* *@` + C# blocks |
+| JSX/TSX | JS/TS rules already cover comments; no additional splitter needed |
 
-The region splitter is a small scanner that recognizes host delimiters only; it
-does not validate nesting. A line that straddles a region boundary is counted
-with the region that starts it, and the split is reported in verbose diagnostics.
+`Language.embedded` selects the strategy: `EmbeddedKind::Html` for
+HTML/XML/Vue/Svelte/Astro/Razor, `EmbeddedKind::Markdown` for Markdown. The
+splitter is a deliberately small scanner that recognizes host delimiters only;
+it does not validate markup nesting or parse the host language.
+
+HTML-like rules:
+
+- `<script>` defaults to JavaScript/TypeScript. `lang="ts|js|tsx|jsx"` and
+  `type="module|text/javascript|application/javascript|text/typescript|…"` are
+  accepted; other script types (for example `application/json`) are **not**
+  treated as embedded code.
+- `<style>` defaults to CSS and accepts `lang="stylus"` or
+  `type="text/stylus"`.
+- Self-closing tags and `<script src="…"></script>` do not create a region.
+- An opening tag-only line (`<script>`, `<style>`) is classified with the host
+  syntax; content and closing-tag lines are classified with the embedded
+  syntax. A line containing inline content is classified with the embedded
+  syntax.
+
+Markdown rules:
+
+- Fences are ``` or `~~~` with up to three leading spaces and at least three
+  markers. A closing fence must use the same marker, at least the same length,
+  and may only be followed by whitespace.
+- The info string is resolved through an alias table (`rust`/`rs`, `py`,
+  `js`/`ts`, `c++`, `sh`, `yml`, `proto`, …), including `{.python}` forms.
+  Unknown or plain-text info strings use a neutral “Text” syntax where every
+  line is code.
+- Fence lines count as code; the region spans the opening through closing fence.
+  An unclosed fence runs to EOF.
+- Inline backticks remain ordinary host text and are not parsed as fences.
+
+Region state is reset between regions, so an unterminated comment/string in one
+`<script>` or fence cannot leak into the next one. Region boundaries are
+recorded per file (`RegionInfo { kind, language, start_line, end_line }`),
+printed under `--files`/`--verbose`, and included in the GUI JSON export.
+Embedded lines remain aggregated under the host file; they are not added to the
+embedded language’s summary row.
 
 ### 5.6 Statistics policy
 
@@ -537,15 +577,40 @@ Known limitation:
 - Ruby/Perl unquoted lowercase heredoc delimiters are not guessed; use an
   uppercase or quoted delimiter (`<<~'sql'`).
 
-### Phase 4 — Embedded and template languages
+### Phase 4 — Embedded and template languages (implemented)
 
-Scope: region splitting for HTML/XML, Vue/Svelte/Astro, Razor, Markdown fences.
+Delivered:
 
-Acceptance criteria:
+- **`EmbeddedKind` metadata.** HTML, XML, Vue, Svelte, Astro and Razor use the
+  HTML splitter; Markdown uses the fence splitter.
+- **HTML-like script/style splitting.** `<script>`/`<style>` regions use the
+  embedded language’s comment and literal rules; tag-only lines use the host
+  syntax. `lang`, `type`, self-closing tags and non-JavaScript script types are
+  handled conservatively.
+- **Markdown fenced code.** Backtick and tilde fences, up to three leading
+  spaces, alias-based info strings and a neutral `Text` fallback.
+- **Per-file regions.** `FileEntry.regions` carries `kind`, `language`,
+  `start_line` and `end_line`; the CLI prints them under `--files` (per file)
+  and `--verbose` (aggregated), and the GUI JSON export includes them.
+- **`LineKind` / `LineStats::record`.** Shared line classification used by both
+  the plain and embedded analyzers.
+- **State isolation.** Embedded parser state is reset at every region boundary;
+  no cross-region leakage of block comments/strings.
+
+Acceptance criteria met:
 
 - `<script>` blocks use JS/TS comment rules; `<style>` uses CSS.
-- Markdown fenced code is classified by its info string.
-- Region boundaries are visible in verbose output.
+- Vue `<script lang="ts">`, Stylus `<style lang="stylus">` and single-line
+  `<script>code</script>` are classified correctly.
+- Markdown fenced code is classified by its info string; unknown fences use
+  the neutral syntax.
+- Region boundaries are visible in `--files` and `--verbose` output and in the
+  GUI JSON export.
+- 14 new Phase 4 tests (65 library tests total), plus GUI JSON/region coverage.
+
+Not in this phase: Jupyter `.ipynb` cell extraction, ERB/EJS, Haml/Slim, Blade,
+MDX and other template-specific splitters. They remain future embedded-region
+work.
 
 ### Phase 5 — User-defined languages
 
@@ -563,24 +628,25 @@ Acceptance criteria:
 
 ## 7. Language matrix
 
-Current registry (132). Phase 1–3 and Phase 2b groups are listed in section 6;
+Current registry (132). Phase 1–4 and Phase 2b groups are listed in section 6;
 the table below focuses on languages that are **not** covered and what blocks
-them.
+them. These are future embedded-region extensions, not part of the implemented
+Phase 4 scope.
 
-| Language | Extensions | Blocker | Target phase |
-|----------|------------|---------|--------------|
-| Jupyter | `.ipynb` | JSON container, per-cell extraction | 4 |
-| ERB/EJS | `.erb`, `.ejs` | `<%# %>` regions + embedded Ruby/JS | 4 |
-| Haml/Slim | `.haml`, `.slim` | indentation-based templates | 4 |
-| Blade | `*.blade.php` | nested extension + PHP/HTML regions | 4 |
-| MDX | `.mdx` | Markdown + JSX regions | 4 |
+| Language | Extensions | Blocker | Target |
+|----------|------------|---------|--------|
+| Jupyter | `.ipynb` | JSON container, per-cell extraction | future Phase 4 extension |
+| ERB/EJS | `.erb`, `.ejs` | `<%# %>` regions + embedded Ruby/JS | future Phase 4 extension |
+| Haml/Slim | `.haml`, `.slim` | indentation-based templates | future Phase 4 extension |
+| Blade | `*.blade.php` | nested extension + PHP/HTML regions | future Phase 4 extension |
+| MDX | `.mdx` | Markdown + JSX regions | future Phase 4 extension |
 
 Rules of thumb for future additions:
 
 - One comment syntax and one string syntax → Phase 1 style entry.
 - Multiple/nested comments or unusual literals → Phase 2 style entry.
 - Needs a filename, shebang, or ambiguity hint → Phase 3.
-- Contains another language → Phase 4.
+- Contains another language → extend the Phase 4 region splitter.
 - User-specific or proprietary → Phase 5.
 
 ---
@@ -606,8 +672,11 @@ Rules of thumb for future additions:
    a comment-only line, a code-only line, a mixed line, a blank line, and a
    literal containing a comment marker. Table-driven, so a new language without
    fixtures fails CI.
-7. **Embedded fixtures** (Phase 4): HTML with `<script>`/`<style>`, Vue SFC,
-   Markdown fences.
+7. **Embedded fixtures** (Phase 4, implemented): HTML with
+   `<script>`/`<style>`, Vue SFC with `lang="ts"`, single-line script, JSON
+   script exclusion, scripts inside HTML comments, Markdown backtick/tilde
+   fences, unknown fences, marker mismatch, unclosed fences and state reset
+   between regions.
 8. **Invariants**: `code + comment + mixed + blank == total` for every analyzed
    file in the fixture corpus.
 9. **Performance**: scan a fixed corpus before/after; fail on > 5 % regression.
@@ -626,8 +695,13 @@ Rules of thumb for future additions:
 - Per-file detection uses registry index slices; only shared extensions and
   extensionless files allocate (a candidate `Vec` and an 8 KiB sample).
 - Phase 2b scans `&[u8]` and no longer allocates a `Vec<char>` per line.
-- Benchmark on the 1,900-file corpus (debug builds, 9 runs): Phase 2 median
-  **12.9 s** → current median **9.85 s** (~24 % faster).
+- Phase 4 only adds the region splitter for files whose `Language.embedded`
+  is set; ordinary languages take the existing path. Embedded syntaxes and
+  parser states are cached per file, and fence/tag scanning is byte-local.
+- Benchmark on the 1,900-file corpus (debug builds): Phase 2 median
+  **12.9 s** → Phase 2b median **9.85 s** (~24 % faster). Phase 4 vs Phase 3
+  (5 alternating runs each): median **16.46 s → 16.25 s** (~1 % faster, within
+  noise; no regression).
 - The analyzer remains single-threaded per file; the GUI already runs it on a
   worker thread. File-level parallelism is out of scope for now.
 
@@ -643,7 +717,8 @@ Rules of thumb for future additions:
   `Vec<&'static str>`; richer heredocs use `heredoc_rules`, and C++ raw strings
   use the additive `raw_strings` field. Existing literals only need
   `..Default::default()`.
-- CSV/JSON export schemas do not change.
+- CSV export columns are unchanged. The GUI JSON export adds an additive
+  `regions` array per file; existing fields keep their names and meanings.
 - Statistics definitions (`effective = code + mixed`, `comment = comment +
   mixed`) do not change.
 - New languages are additive; the only removal is the unreachable `.R`
@@ -672,7 +747,8 @@ Rules of thumb for future additions:
 2. Should `--list` group languages by family instead of one alphabetical block?
 3. Do we need a `codelines.toml` in the scanned project (auto-discovered), or
    only an explicit `--languages FILE` flag?
-4. Should embedded-region lines appear as separate languages in the summary, or
-   stay aggregated under the host file?
+4. ~~Should embedded-region lines appear as separate languages in the summary,
+   or stay aggregated under the host file?~~ Resolved: embedded lines stay
+   aggregated under the host file; regions are exposed per file instead.
 5. Is a content-hint disambiguation for `.m`/`.v` acceptable, or should those
    extensions require `--lang` when ambiguous?

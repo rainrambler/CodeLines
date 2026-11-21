@@ -138,6 +138,12 @@ pub fn plain_text(report: &Report) -> String {
                 file.stats.mixed_lines,
                 file.stats.blank_lines,
             ));
+            for region in &file.regions {
+                out.push_str(&format!(
+                    "      embedded: {} ({}) lines {}-{}\n",
+                    region.kind, region.language, region.start_line, region.end_line
+                ));
+            }
         }
     }
 
@@ -212,7 +218,7 @@ pub fn json(report: &Report) -> String {
     out.push_str("  \"files\": [\n");
     for (index, file) in report.files.iter().enumerate() {
         out.push_str(&format!(
-            "    {{\"path\": {}, \"language\": {}, \"total_lines\": {}, \"code_lines\": {}, \"comment_lines\": {}, \"mixed_lines\": {}, \"blank_lines\": {}, \"effective_code\": {}, \"total_comment\": {}, \"code_ratio\": {:.4}, \"comment_ratio\": {:.4}}}",
+            "    {{\"path\": {}, \"language\": {}, \"total_lines\": {}, \"code_lines\": {}, \"comment_lines\": {}, \"mixed_lines\": {}, \"blank_lines\": {}, \"effective_code\": {}, \"total_comment\": {}, \"code_ratio\": {:.4}, \"comment_ratio\": {:.4}, \"regions\": [",
             json_string(&file.path.display().to_string()),
             json_string(&file.language),
             file.stats.total_lines,
@@ -225,6 +231,19 @@ pub fn json(report: &Report) -> String {
             file.stats.code_ratio(),
             file.stats.comment_ratio(),
         ));
+        for (region_index, region) in file.regions.iter().enumerate() {
+            if region_index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{\"kind\": {}, \"language\": {}, \"start_line\": {}, \"end_line\": {}}}",
+                json_string(&region.kind),
+                json_string(&region.language),
+                region.start_line,
+                region.end_line,
+            ));
+        }
+        out.push_str("]}");
         out.push_str(if index + 1 == report.files.len() {
             "\n"
         } else {
@@ -332,6 +351,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("main.rs"), "// note\nfn main() {}\n").unwrap();
         fs::write(dir.join("lib.rs"), "/* block */\nfn helper() {}\n").unwrap();
+        fs::write(
+            dir.join("notes.md"),
+            "# Notes\n\n```rust\n// note\nfn sample() {}\n```\n",
+        )
+        .unwrap();
 
         let options = ScanOptions {
             paths: vec![dir.clone()],
@@ -364,6 +388,8 @@ mod tests {
         assert!(json.trim_end().ends_with('}'));
         assert!(json.contains("\"languages\": ["));
         assert!(json.contains("\"files\": ["));
+        assert!(json.contains("\"regions\": ["));
+        assert!(json.contains("\"kind\": \"fence\""));
 
         let mut depth = 0i32;
         let mut in_string = false;
