@@ -283,10 +283,17 @@ version = "1.0.1"
 dependencies = [
  "clap",
  "colored",
+ "walkdir",
+]
+
+[[package]]
+name = "codelines-gui"
+version = "1.0.1"
+dependencies = [
+ "codelines",
  "eframe",
  "egui_extras",
  "rfd",
- "walkdir",
 ]
 
 [[package]]

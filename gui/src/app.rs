@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Color32, Layout, RichText, Ui, vec2};
 
-use crate::language;
-use crate::output::LanguageSummary;
-use crate::report::{Progress, Report, ScanOptions};
+use codelines::language;
+use codelines::output::LanguageSummary;
+use codelines::report::{Progress, Report, ScanOptions};
 
 use super::charts;
 use super::export::{self, ExportKind};
@@ -86,7 +86,7 @@ impl ViewState {
         self.file_rows_key = None;
     }
 
-    fn ensure_file_rows(&mut self, files: &[crate::report::FileEntry]) {
+    fn ensure_file_rows(&mut self, files: &[codelines::report::FileEntry]) {
         let key = (
             self.file_query.clone(),
             self.file_sort.key,

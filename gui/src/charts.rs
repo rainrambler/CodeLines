@@ -10,8 +10,8 @@ use eframe::egui::{
     Shape, Stroke, Ui, pos2, vec2,
 };
 
-use crate::output::LanguageSummary;
-use crate::report::Report;
+use codelines::output::LanguageSummary;
+use codelines::report::Report;
 
 use super::theme;
 use super::widgets::{format_number, legend_row};

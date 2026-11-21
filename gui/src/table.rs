@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout, RichText, Sense, Shape, Stroke, Ui, pos2, vec2};
 use egui_extras::{Column, TableBuilder};
 
-use crate::output::LanguageSummary;
-use crate::report::FileEntry;
+use codelines::output::LanguageSummary;
+use codelines::report::FileEntry;
 
 use super::theme;
 use super::widgets::{format_compact, format_number, format_percent, relative_path};

@@ -15,7 +15,7 @@ Count lines of code, comments, and blanks across your entire project — intelli
 - **Multiple Output Formats** — Colored terminal output, plain text (pipe-friendly), or CSV.
 - **Verbose & Per-File Modes** — Drill down into detailed per-file statistics or see a compact summary.
 - **Ratio Calculations** — Code% and comment% for each language and overall totals.
-- **Desktop GUI** — an optional native window (`--features gui`) with live progress, charts, sortable tables and CSV/JSON export.
+- **Desktop GUI** — a separate crate (`codelines-gui`) with live progress, charts, sortable tables and CSV/JSON export.
 
 ## Installation
 
@@ -25,7 +25,11 @@ Count lines of code, comments, and blanks across your entire project — intelli
 cargo build --release
 ```
 
-The binary will be at `target/release/codelines`.
+The binary will be at `target/release/codelines`. The GUI is a separate crate:
+
+```bash
+cargo install --path gui
+```
 
 ### Requirements
 
@@ -68,13 +72,13 @@ codelines --list
 ## Desktop GUI
 
 CodeLines also ships a native desktop interface built with [egui](https://github.com/emilk/egui).
-It reuses the exact same analysis engine as the CLI and is compiled only when the
-`gui` feature is enabled, so the CLI binary stays dependency-light.
+It lives in its own workspace crate (`gui/`) and reuses the exact same analysis
+engine as the CLI, so the CLI binary stays dependency-light.
 
 ```bash
 # Build and run the GUI (optionally pointing it at a project folder)
-cargo run --release --features gui --bin codelines-gui
-cargo run --release --features gui --bin codelines-gui -- /path/to/project
+cargo run --release -p codelines-gui
+cargo run --release -p codelines-gui -- /path/to/project
 ```
 
 The GUI offers:
@@ -118,14 +122,14 @@ Total                      16       2100       1500        330        270    71.
 5. **Output** — Renders results in the chosen format (colored table, plain text, or CSV).
 
 Steps 1–4 live in the `codelines` library (`report::analyze`) and are shared by the CLI and the GUI;
-step 5 is implemented by each front-end.
+step 5 is implemented by each front-end crate (`codelines` CLI and `codelines-gui`).
 
 ## Development
 
 ```bash
-cargo test                 # core analysis pipeline
-cargo test --features gui  # pipeline + export formats
-cargo clippy --features gui --all-targets
+cargo test                       # core analysis pipeline (default crate)
+cargo test -p codelines-gui      # GUI crate + export formats
+cargo clippy --workspace --all-targets
 ```
 
 ## License
