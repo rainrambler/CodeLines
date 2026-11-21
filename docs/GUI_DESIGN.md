@@ -152,7 +152,7 @@ Three views, one toolbar, one filter rail, one status bar.
 │               │ │ files 19 ││ lines    ││ code     ││ 257      ││ 20       │ │
 │ Exclude files │ └──────────┘└──────────┘└──────────┘└──────────┘└──────────┘ │
 │ [ Cargo.lock] │ ┌─────────────────────────────┐ ┌──────────────────────────┐│
-│               │ │ Lines by language           │ │ Language share           ││
+│ ☑ .gitignore  │ │ Lines by language           │ │ Language share           ││
 │ LANGUAGES     │ │ Rust  ████████████░░  4,392 │ │      ╭──────╮            ││
 │ [ search…   ] │ │ Py    ▎                89   │ │     │ 3,848  │  ● Rust    ││
 │ ☑ Rust        │ │ TOML  ▎                34   │ │      ╰──────╯  ● Markdown ││
@@ -315,6 +315,7 @@ pub struct ScanOptions {            // input
     pub languages: Vec<String>,
     pub exclude_dirs: Vec<String>,
     pub exclude_files: Vec<String>,
+    pub respect_gitignore: bool,    // honour .gitignore (default: true)
 }
 
 pub enum Progress {                 // streaming

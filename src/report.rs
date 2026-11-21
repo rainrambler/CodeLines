@@ -29,6 +29,8 @@ pub struct ScanOptions {
     pub exclude_dirs: Vec<String>,
     /// Extra file names to skip.
     pub exclude_files: Vec<String>,
+    /// Honour `.gitignore` files found in (and above) the scanned directories.
+    pub respect_gitignore: bool,
 }
 
 impl Default for ScanOptions {
@@ -38,6 +40,7 @@ impl Default for ScanOptions {
             languages: Vec::new(),
             exclude_dirs: Vec::new(),
             exclude_files: Vec::new(),
+            respect_gitignore: true,
         }
     }
 }
@@ -121,6 +124,7 @@ pub fn analyze(
         &options.exclude_dirs,
         &options.exclude_files,
         &options.languages,
+        options.respect_gitignore,
         |path| {
             files_seen += 1;
             if files_seen == 1 || last_emit.elapsed() >= PROGRESS_INTERVAL {
@@ -279,6 +283,82 @@ mod tests {
                 .iter()
                 .any(|(extension, count)| extension == ".txt" && *count == 1)
         );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn honours_gitignore_rules_by_default() {
+        let dir = fixture("gitignore");
+        fs::write(
+            dir.join(".gitignore"),
+            "generated/\n*.gen.rs\n!keep.gen.rs\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("generated")).unwrap();
+        fs::write(dir.join("generated/skip.rs"), "fn skipped() {}\n").unwrap();
+        fs::write(dir.join("src/drop.gen.rs"), "fn dropped() {}\n").unwrap();
+        fs::write(dir.join("src/keep.gen.rs"), "fn kept() {}\n").unwrap();
+
+        let options = ScanOptions {
+            paths: vec![dir.clone()],
+            ..Default::default()
+        };
+        let report = analyze(&options, None, |_| {});
+
+        let rust = report
+            .summaries
+            .iter()
+            .find(|summary| summary.language == "Rust")
+            .expect("Rust summary");
+        assert_eq!(
+            rust.file_count, 2,
+            "src/main.rs and the whitelisted .gen.rs"
+        );
+
+        assert!(
+            report
+                .files
+                .iter()
+                .all(|file| !file.path.starts_with(dir.join("generated")))
+        );
+        assert!(
+            report
+                .files
+                .iter()
+                .all(|file| file.path.file_name().unwrap() != "drop.gen.rs")
+        );
+        assert!(
+            report
+                .files
+                .iter()
+                .any(|file| file.path.file_name().unwrap() == "keep.gen.rs")
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn gitignore_can_be_disabled() {
+        let dir = fixture("no-gitignore");
+        fs::write(dir.join(".gitignore"), "generated/\n*.gen.rs\n").unwrap();
+        fs::create_dir_all(dir.join("generated")).unwrap();
+        fs::write(dir.join("generated/skip.rs"), "fn skipped() {}\n").unwrap();
+        fs::write(dir.join("src/drop.gen.rs"), "fn dropped() {}\n").unwrap();
+
+        let options = ScanOptions {
+            paths: vec![dir.clone()],
+            respect_gitignore: false,
+            ..Default::default()
+        };
+        let report = analyze(&options, None, |_| {});
+
+        let rust = report
+            .summaries
+            .iter()
+            .find(|summary| summary.language == "Rust")
+            .expect("Rust summary");
+        assert_eq!(rust.file_count, 3);
 
         fs::remove_dir_all(&dir).unwrap();
     }

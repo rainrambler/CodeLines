@@ -11,6 +11,7 @@ Count lines of code, comments, and blanks across your entire project — intelli
 - **String-Aware Parsing** — Correctly ignores comment-like markers inside string literals to avoid false positives.
 - **Line Classification** — Each line is classified as: **code**, **comment**, **mixed** (code + comment), or **blank**.
 - **Recursive Directory Scanning** — Walks entire directory trees with sensible defaults that skip VCS directories, build artifacts, and dependency folders.
+- **`.gitignore` Aware** — Honours `.gitignore` files (including nested ones and those in parent directories); disable with `--no-gitignore` or the GUI checkbox.
 - **Flexible Filtering** — Filter by language, exclude specific directories or files.
 - **Multiple Output Formats** — Colored terminal output, plain text (pipe-friendly), or CSV.
 - **Verbose & Per-File Modes** — Drill down into detailed per-file statistics or see a compact summary.
@@ -53,6 +54,9 @@ codelines --exclude vendor --exclude generated
 # Exclude specific files
 codelines --exclude-file Cargo.lock
 
+# .gitignore files are honoured by default; count everything instead
+codelines --no-gitignore
+
 # Verbose output (separate code/comment/mixed columns)
 codelines --verbose
 
@@ -87,7 +91,7 @@ Debug builds keep the console window for log output.
 
 The GUI offers:
 
-- A project picker with drag & drop, plus include/exclude filters and a searchable language selector.
+- A project picker with drag & drop, plus include/exclude filters, a `.gitignore` toggle and a searchable language selector.
 - Live progress while scanning and analyzing (Esc cancels a running analysis).
 - An **Overview** tab with KPI cards, a stacked bar chart of lines by language and a donut chart of each language's share.
 - A **Files** tab with a filterable, sortable per-file table (double-click a row to reveal the file in your file manager).
@@ -119,7 +123,7 @@ Total                      16       2100       1500        330        270    71.
 
 ## How It Works
 
-1. **Scan** — Recursively walks directories, identifying files by extension using built-in language definitions.
+1. **Scan** — Recursively walks directories, identifying files by extension using built-in language definitions and skipping paths matched by `.gitignore` rules.
 2. **Read** — Loads file contents from disk.
 3. **Analyze** — Parses each line with language-specific comment rules, tracking block comment and multi-line string state across lines.
 4. **Aggregate** — Sums statistics per language and globally.

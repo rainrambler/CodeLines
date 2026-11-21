@@ -18,5 +18,5 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-walkdir = "2"
+ignore = "0.4"
 colored = "2"

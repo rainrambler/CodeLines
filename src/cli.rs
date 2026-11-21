@@ -31,6 +31,10 @@ pub struct Args {
     #[arg(long = "exclude-file", value_name = "FILE")]
     pub exclude_files: Vec<String>,
 
+    /// Do not honour .gitignore files (by default ignored paths are skipped)
+    #[arg(long = "no-gitignore")]
+    pub no_gitignore: bool,
+
     /// Show detailed statistics (separate pure code/comment/mixed lines)
     #[arg(short, long)]
     pub verbose: bool,

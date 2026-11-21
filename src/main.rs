@@ -26,6 +26,7 @@ fn main() {
         languages: args.languages.clone(),
         exclude_dirs: args.exclude_dirs.clone(),
         exclude_files: args.exclude_files.clone(),
+        respect_gitignore: !args.no_gitignore,
     };
 
     let report = report::analyze(&options, None, |_| {});

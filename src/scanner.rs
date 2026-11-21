@@ -1,11 +1,12 @@
 /// File traversal and identification module: recursively scans directories,
 /// grouping files by language.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::language::{self, Language};
-use walkdir::WalkDir;
+use ignore::WalkBuilder;
 
 /// Default directory names to ignore
 const DEFAULT_IGNORE_DIRS: &[&str] = &[
@@ -82,13 +83,24 @@ impl Default for ScanResult {
 }
 
 /// Recursively scan the given paths, collecting source files grouped by language.
+///
+/// When `respect_gitignore` is true, paths matched by `.gitignore` files are
+/// skipped (including `.gitignore` files in parent directories of the roots).
 pub fn scan_directory(
     paths: &[PathBuf],
     ignore_dirs: &[String],
     ignore_files: &[String],
     languages_filter: &[String],
+    respect_gitignore: bool,
 ) -> ScanResult {
-    scan_directory_with_progress(paths, ignore_dirs, ignore_files, languages_filter, |_| {})
+    scan_directory_with_progress(
+        paths,
+        ignore_dirs,
+        ignore_files,
+        languages_filter,
+        respect_gitignore,
+        |_| {},
+    )
 }
 
 /// Same as [`scan_directory`], but calls `on_file` for every visited file,
@@ -98,19 +110,20 @@ pub fn scan_directory_with_progress(
     ignore_dirs: &[String],
     ignore_files: &[String],
     languages_filter: &[String],
+    respect_gitignore: bool,
     mut on_file: impl FnMut(&Path),
 ) -> ScanResult {
     let mut result = ScanResult::new();
     let all_langs = language::supported_languages();
 
     // Build filter sets
-    let ignore_dir_set: Vec<String> = DEFAULT_IGNORE_DIRS
+    let ignore_dir_set: HashSet<String> = DEFAULT_IGNORE_DIRS
         .iter()
         .map(|s| s.to_string())
         .chain(ignore_dirs.iter().cloned())
         .collect();
 
-    let ignore_file_set: Vec<String> = DEFAULT_IGNORE_FILES
+    let ignore_file_set: HashSet<String> = DEFAULT_IGNORE_FILES
         .iter()
         .map(|s| s.to_string())
         .chain(ignore_files.iter().cloned())
@@ -138,6 +151,11 @@ pub fn scan_directory_with_progress(
         }
     }
 
+    // Shared between the per-root walkers; `ignore`'s filter callback must be
+    // `'static`, so the sets are reference-counted rather than borrowed.
+    let ignore_dir_set = Arc::new(ignore_dir_set);
+    let ignore_file_set = Arc::new(ignore_file_set);
+
     for root_path in paths {
         if !root_path.exists() {
             result.warnings.push(format!(
@@ -147,7 +165,8 @@ pub fn scan_directory_with_progress(
             continue;
         }
 
-        // If it's a file, process directly
+        // If it's a file, process directly (an explicitly named file is always
+        // analyzed, regardless of ignore rules)
         if root_path.is_file() {
             result.total_files_scanned += 1;
             on_file(root_path);
@@ -156,29 +175,34 @@ pub fn scan_directory_with_progress(
         }
 
         // If it's a directory, walk recursively
-        for entry in WalkDir::new(root_path)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| {
-                // Filter out directories to ignore
-                if e.file_type().is_dir() {
-                    let name = e.file_name().to_string_lossy();
-                    if ignore_dir_set.iter().any(|d| name == d.as_str()) {
-                        return false;
-                    }
+        let dirs = Arc::clone(&ignore_dir_set);
+        let files = Arc::clone(&ignore_file_set);
+        let walker = WalkBuilder::new(root_path)
+            // Hidden files are counted; only the named ignore lists below apply.
+            .hidden(false)
+            // `.ignore` files are a ripgrep convention, not git's.
+            .ignore(false)
+            .git_global(false)
+            .git_exclude(false)
+            .git_ignore(respect_gitignore)
+            // Honour `.gitignore` even when the tree is not a git repository.
+            .require_git(false)
+            // Read `.gitignore` files from parent directories of the roots too.
+            .parents(respect_gitignore)
+            .filter_entry(move |entry| {
+                let name = entry.file_name().to_string_lossy();
+                if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    !dirs.contains(name.as_ref())
+                } else {
+                    !files.contains(name.as_ref())
                 }
-                true
             })
-        {
+            .build();
+
+        for entry in walker {
             match entry {
                 Ok(e) => {
-                    if e.file_type().is_file() {
-                        // Filter out files to ignore
-                        let file_name = e.file_name().to_string_lossy();
-                        if ignore_file_set.iter().any(|f| file_name == f.as_str()) {
-                            continue;
-                        }
-
+                    if e.file_type().is_some_and(|ft| ft.is_file()) {
                         result.total_files_scanned += 1;
                         on_file(e.path());
                         process_file(e.path(), &ext_to_lang, &mut result);

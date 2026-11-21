@@ -107,6 +107,7 @@ pub struct CodeLinesApp {
     root: String,
     exclude_dirs: String,
     exclude_files: String,
+    respect_gitignore: bool,
     selected_languages: BTreeSet<String>,
     language_search: String,
     total_languages: usize,
@@ -127,6 +128,7 @@ impl CodeLinesApp {
             root: String::new(),
             exclude_dirs: String::new(),
             exclude_files: String::new(),
+            respect_gitignore: true,
             selected_languages: BTreeSet::new(),
             language_search: String::new(),
             total_languages: language::supported_languages().len(),
@@ -180,6 +182,7 @@ impl CodeLinesApp {
                 .collect::<Vec<String>>(),
             exclude_dirs: split_list(&self.exclude_dirs),
             exclude_files: split_list(&self.exclude_files),
+            respect_gitignore: self.respect_gitignore,
         };
 
         self.worker = Some(AnalysisWorker::spawn(ctx.clone(), options));
@@ -594,6 +597,14 @@ impl CodeLinesApp {
         );
         ui.label(
             RichText::new("Exact file names, comma or newline separated")
+                .size(9.5)
+                .color(theme::muted(ui)),
+        );
+
+        ui.add_space(8.0);
+        ui.checkbox(&mut self.respect_gitignore, "Respect .gitignore files");
+        ui.label(
+            RichText::new("Skips paths matched by .gitignore rules")
                 .size(9.5)
                 .color(theme::muted(ui)),
         );
