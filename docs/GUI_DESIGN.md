@@ -45,8 +45,8 @@ src/                  # `codelines` crate: library + CLI
 ├── lib.rs            # public API: analyzer, cli, language, output, report, scanner
 ├── main.rs           # `codelines` CLI binary (thin argument parsing + rendering)
 ├── analyzer.rs       # line classification (code / comment / mixed / blank)
-├── language.rs       # 122 language definitions and comment rules
-├── scanner.rs        # recursive walk, ignore lists, extension → language mapping
+├── language.rs       # 132 language definitions, registry and detection metadata
+├── scanner.rs        # recursive walk, ignore lists, filename/shebang/ambiguity detection
 ├── output.rs         # summary aggregation and CLI formatters (colored / plain / CSV)
 ├── report.rs         # shared pipeline: scan → analyze → Report (+ progress, cancel)
 └── cli.rs            # clap argument definition

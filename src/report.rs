@@ -137,11 +137,6 @@ pub fn analyze(
         },
     );
 
-    let lang_map: HashMap<&'static str, language::Language> = language::supported_languages()
-        .into_iter()
-        .map(|lang| (lang.name, lang))
-        .collect();
-
     // Deterministic processing order so progress reporting is stable.
     let mut languages: Vec<&String> = scan.files_by_language.keys().collect();
     languages.sort();
@@ -162,7 +157,7 @@ pub fn analyze(
     });
 
     'outer: for lang_name in languages {
-        let lang_def = match lang_map.get(lang_name.as_str()) {
+        let lang_def = match language::find_language_by_name(lang_name) {
             Some(lang) => lang,
             None => continue,
         };
@@ -377,6 +372,110 @@ mod tests {
         assert_eq!(report.summaries.len(), 1);
         assert_eq!(report.summaries[0].language, "Rust");
         assert_eq!(report.files.len(), 1);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn detection_fixture(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("codelines-detection-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Makefile"), "# comment\nall:\n\t@echo hi\n").unwrap();
+        fs::write(dir.join("Dockerfile"), "# comment\nFROM alpine\n").unwrap();
+        fs::write(
+            dir.join("CMakeLists.txt"),
+            "cmake_minimum_required(VERSION 3.20)\n# comment\n",
+        )
+        .unwrap();
+        fs::write(dir.join("BUILD"), "# comment\ncc_library(name = \"x\")\n").unwrap();
+        fs::write(
+            dir.join("tool"),
+            "#!/usr/bin/env python3\n# comment\nprint('hi')\n",
+        )
+        .unwrap();
+        fs::write(dir.join("App.m"), "@interface App\n@end\n").unwrap();
+        fs::write(dir.join("calc.m"), "classdef Calc\nend\n").unwrap();
+        fs::write(dir.join("mystery.m"), "x = 1;\n").unwrap();
+        fs::write(dir.join("notes.txt"), "hello\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn detects_filenames_shebangs_and_ambiguous_extensions() {
+        let dir = detection_fixture("detection");
+        let options = ScanOptions {
+            paths: vec![dir.clone()],
+            ..Default::default()
+        };
+        let report = analyze(&options, None, |_| {});
+
+        let names: Vec<&str> = report
+            .summaries
+            .iter()
+            .map(|summary| summary.language.as_str())
+            .collect();
+        for expected in [
+            "Makefile",
+            "Dockerfile",
+            "CMake",
+            "Starlark",
+            "Python",
+            "Objective-C",
+            "MATLAB",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+
+        let language_of = |name: &str| {
+            report
+                .files
+                .iter()
+                .find(|file| file.path.file_name().unwrap() == name)
+                .map(|file| file.language.as_str())
+                .unwrap_or_else(|| panic!("missing file {name}"))
+        };
+        assert_eq!(language_of("tool"), "Python");
+        assert_eq!(language_of("App.m"), "Objective-C");
+        assert_eq!(language_of("calc.m"), "MATLAB");
+        assert_eq!(language_of("mystery.m"), "Objective-C");
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ambiguous extension .m -> Objective-C")),
+            "expected an ambiguity note, got {:?}",
+            report.warnings
+        );
+        assert!(
+            report
+                .unknown_extensions
+                .iter()
+                .any(|(extension, count)| extension == ".txt" && *count == 1)
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn language_filter_selects_ambiguous_candidates() {
+        let dir = detection_fixture("ambiguous-filter");
+        let options = ScanOptions {
+            paths: vec![dir.clone()],
+            languages: vec!["MATLAB".to_string()],
+            ..Default::default()
+        };
+        let report = analyze(&options, None, |_| {});
+
+        assert_eq!(report.summaries.len(), 1);
+        assert_eq!(report.summaries[0].language, "MATLAB");
+        assert_eq!(report.summaries[0].file_count, 3);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .all(|warning| !warning.contains("ambiguous extension"))
+        );
 
         fs::remove_dir_all(&dir).unwrap();
     }

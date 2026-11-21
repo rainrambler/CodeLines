@@ -1,8 +1,8 @@
 /// Analyzer module: parses file content line by line, classifying each line
 /// as code, comment, blank, or mixed (code + comment).
 use crate::language::{
-    BlockComment, BoundaryAfter, CharLiteral, CommentRule, LineComment, LineScope, RegionComment,
-    StringEscape, StringLiteral,
+    BlockComment, BoundaryAfter, CharLiteral, CommentRule, Heredoc, LineComment, LineScope,
+    RawString, RegionComment, StringEscape, StringLiteral,
 };
 
 /// Per-file line-level statistics result
@@ -78,11 +78,12 @@ impl LineStats {
 #[derive(Debug, Clone)]
 pub struct CompiledSyntax {
     strings: Vec<StringLiteral>,
+    raw_strings: Vec<RawString>,
     blocks: Vec<BlockComment>,
     lines: Vec<LineComment>,
     chars: Vec<CharLiteral>,
     regions: Vec<RegionComment>,
-    heredocs: Vec<&'static str>,
+    heredocs: Vec<Heredoc>,
 }
 
 impl CompiledSyntax {
@@ -104,13 +105,17 @@ impl CompiledSyntax {
         let mut regions = rule.regions.clone();
         regions.sort_by_key(|a| std::cmp::Reverse(a.start.chars().count()));
 
+        let mut heredocs = rule.heredoc_rules.clone();
+        heredocs.extend(rule.heredocs.iter().map(|marker| Heredoc::new(marker)));
+
         Self {
             strings,
+            raw_strings: rule.raw_strings.clone(),
             blocks,
             lines,
             chars: rule.chars.clone(),
             regions,
-            heredocs: rule.heredocs.clone(),
+            heredocs,
         }
     }
 }
@@ -132,6 +137,9 @@ enum Mode {
     },
     String {
         rule: usize,
+    },
+    RawString {
+        close: String,
     },
     Region {
         rule: usize,
@@ -184,9 +192,11 @@ pub fn analyze_content_compiled(content: &str, syntax: &CompiledSyntax) -> LineS
 
 /// Parse one line of text, returning (has_code, has_comment, new_state)
 fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool, bool, ParseState) {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
-    let first_nonspace = chars.iter().position(|c| !c.is_whitespace());
+    // Delimiters are ASCII, so scanning bytes directly is safe: UTF-8
+    // continuation bytes (>= 0x80) can never form an ASCII marker.
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let first_nonspace = bytes.iter().position(|b| !b.is_ascii_whitespace());
     let mut pos = 0;
     let mut has_code = false;
     let mut has_comment = false;
@@ -212,35 +222,31 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
     }
 
     loop {
-        match mode.clone() {
+        match std::mem::take(&mut mode) {
             Mode::Block { rule, depth } => {
                 let block = &syntax.blocks[rule];
                 if pos >= len {
+                    mode = Mode::Block { rule, depth };
                     break;
                 }
-                if scope_matches(
-                    block.end_scope,
-                    &chars,
-                    pos,
-                    first_nonspace,
-                    block.end.chars().count(),
-                ) && starts_with(&chars, pos, block.end)
+                if scope_matches(block.end_scope, bytes, pos, first_nonspace, block.end.len())
+                    && starts_with(bytes, pos, block.end)
                 {
                     has_comment = true;
-                    pos += block.end.chars().count();
-                    if depth <= 1 {
-                        mode = Mode::Normal;
+                    pos += block.end.len();
+                    mode = if depth <= 1 {
+                        Mode::Normal
                     } else {
-                        mode = Mode::Block {
+                        Mode::Block {
                             rule,
                             depth: depth - 1,
-                        };
-                    }
+                        }
+                    };
                     continue;
                 }
-                if block.nested && starts_with(&chars, pos, block.start) {
+                if block.nested && starts_with(bytes, pos, block.start) {
                     has_comment = true;
-                    pos += block.start.chars().count();
+                    pos += block.start.len();
                     mode = Mode::Block {
                         rule,
                         depth: depth + 1,
@@ -249,38 +255,43 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
                 }
                 has_comment = true;
                 pos += 1;
+                mode = Mode::Block { rule, depth };
                 continue;
             }
             Mode::String { rule } => {
                 let string = &syntax.strings[rule];
                 if pos >= len {
+                    mode = Mode::String { rule };
                     break;
                 }
                 let escape = string.escape;
-                if escape == StringEscape::Backslash && chars[pos] == '\\' && pos + 1 < len {
+                if escape == StringEscape::Backslash && bytes[pos] == b'\\' && pos + 1 < len {
                     has_code = true;
                     pos += 2;
+                    mode = Mode::String { rule };
                     continue;
                 }
-                if escape == StringEscape::Backtick && chars[pos] == '`' && pos + 1 < len {
+                if escape == StringEscape::Backtick && bytes[pos] == b'`' && pos + 1 < len {
                     has_code = true;
                     pos += 2;
+                    mode = Mode::String { rule };
                     continue;
                 }
                 if scope_matches(
                     string.close_scope,
-                    &chars,
+                    bytes,
                     pos,
                     first_nonspace,
-                    string.close.chars().count(),
-                ) && starts_with(&chars, pos, string.close)
+                    string.close.len(),
+                ) && starts_with(bytes, pos, string.close)
                 {
-                    let close_len = string.close.chars().count();
+                    let close_len = string.close.len();
                     if escape == StringEscape::DoubledQuote
-                        && starts_with(&chars, pos + close_len, string.close)
+                        && starts_with(bytes, pos + close_len, string.close)
                     {
                         has_code = true;
                         pos += close_len * 2;
+                        mode = Mode::String { rule };
                         continue;
                     }
                     has_code = true;
@@ -290,31 +301,53 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
                 }
                 has_code = true;
                 pos += 1;
+                mode = Mode::String { rule };
+                continue;
+            }
+            Mode::RawString { close } => {
+                if pos >= len {
+                    mode = Mode::RawString { close };
+                    break;
+                }
+                if starts_with(bytes, pos, &close) {
+                    has_code = true;
+                    pos += close.len();
+                    mode = Mode::Normal;
+                    continue;
+                }
+                has_code = true;
+                pos += 1;
+                mode = Mode::RawString { close };
                 continue;
             }
             Mode::Region { rule } => {
                 let region = &syntax.regions[rule];
                 if pos >= len {
+                    mode = Mode::Region { rule };
                     break;
                 }
                 if scope_matches(
                     region.end_scope,
-                    &chars,
+                    bytes,
                     pos,
                     first_nonspace,
-                    region.end.chars().count(),
-                ) && starts_with(&chars, pos, region.end)
+                    region.end.len(),
+                ) && starts_with(bytes, pos, region.end)
                 {
                     has_comment = true;
-                    pos += region.end.chars().count();
+                    pos += region.end.len();
                     mode = Mode::Normal;
                     continue;
                 }
                 has_comment = true;
                 pos += 1;
+                mode = Mode::Region { rule };
                 continue;
             }
-            Mode::Heredoc { .. } => break,
+            Mode::Heredoc { terminator, strip } => {
+                mode = Mode::Heredoc { terminator, strip };
+                break;
+            }
             Mode::Normal => {}
         }
 
@@ -324,35 +357,51 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
 
         // Whitespace never counts as code, otherwise indentation before a
         // comment would turn a pure comment line into a mixed line.
-        if chars[pos].is_whitespace() {
+        if bytes[pos].is_ascii_whitespace() {
             pos += 1;
             continue;
         }
 
-        if chars[pos] == '\\' && pos + 1 < len {
+        if bytes[pos] == b'\\' && pos + 1 < len {
             has_code = true;
             pos += 2;
             continue;
         }
 
-        if let Some((next, terminator, strip)) = match_heredoc(&chars, pos, syntax) {
+        if let Some((next, terminator, strip)) = match_heredoc(bytes, pos, syntax) {
             has_code = true;
             pos = next;
             pending_heredoc = Some(Mode::Heredoc { terminator, strip });
             continue;
         }
 
-        if let Some(next) = match_char_literal(&chars, pos, &syntax.chars) {
+        let mut matched = false;
+        for raw in &syntax.raw_strings {
+            if !starts_with(bytes, pos, raw.prefix) {
+                continue;
+            }
+            if let Some((next, close)) = match_raw_string(bytes, pos, raw) {
+                has_code = true;
+                pos = next;
+                mode = Mode::RawString { close };
+                matched = true;
+                break;
+            }
+        }
+        if matched {
+            continue;
+        }
+
+        if let Some(next) = match_char_literal(bytes, pos, &syntax.chars) {
             has_code = true;
             pos = next;
             continue;
         }
 
-        let mut matched = false;
         for (index, string) in syntax.strings.iter().enumerate() {
-            if starts_with(&chars, pos, string.open) && string_open_allowed(string, &chars, pos) {
+            if starts_with(bytes, pos, string.open) && string_open_allowed(string, bytes, pos) {
                 has_code = true;
-                pos += string.open.chars().count();
+                pos += string.open.len();
                 mode = Mode::String { rule: index };
                 matched = true;
                 break;
@@ -365,14 +414,14 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
         for (index, block) in syntax.blocks.iter().enumerate() {
             if scope_matches(
                 block.start_scope,
-                &chars,
+                bytes,
                 pos,
                 first_nonspace,
-                block.start.chars().count(),
-            ) && starts_with(&chars, pos, block.start)
+                block.start.len(),
+            ) && starts_with(bytes, pos, block.start)
             {
                 has_comment = true;
-                pos += block.start.chars().count();
+                pos += block.start.len();
                 mode = Mode::Block {
                     rule: index,
                     depth: 1,
@@ -388,14 +437,14 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
         for (index, region) in syntax.regions.iter().enumerate() {
             if scope_matches(
                 region.start_scope,
-                &chars,
+                bytes,
                 pos,
                 first_nonspace,
-                region.start.chars().count(),
-            ) && starts_with(&chars, pos, region.start)
+                region.start.len(),
+            ) && starts_with(bytes, pos, region.start)
             {
                 has_comment = true;
-                pos += region.start.chars().count();
+                pos += region.start.len();
                 mode = Mode::Region { rule: index };
                 matched = true;
                 break;
@@ -406,7 +455,7 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
         }
 
         for line_comment in &syntax.lines {
-            if line_comment_matches(&chars, pos, first_nonspace, line_comment) {
+            if line_comment_matches(bytes, pos, first_nonspace, line_comment) {
                 has_comment = true;
                 pos = len;
                 matched = true;
@@ -435,7 +484,7 @@ fn parse_line(line: &str, syntax: &CompiledSyntax, state: &ParseState) -> (bool,
 
 fn scope_matches(
     scope: LineScope,
-    chars: &[char],
+    bytes: &[u8],
     pos: usize,
     first_nonspace: Option<usize>,
     prefix_len: usize,
@@ -446,113 +495,114 @@ fn scope_matches(
         LineScope::FirstNonSpace => Some(pos) == first_nonspace,
         LineScope::AloneOnLine => {
             Some(pos) == first_nonspace
-                && chars
+                && bytes
                     .get(pos + prefix_len..)
-                    .is_none_or(|rest| rest.iter().all(|c| c.is_whitespace()))
+                    .is_none_or(|rest| rest.iter().all(|b| b.is_ascii_whitespace()))
         }
+        LineScope::Column(column) => pos == column,
     }
 }
 
-fn string_open_allowed(string: &StringLiteral, chars: &[char], pos: usize) -> bool {
+fn string_open_allowed(string: &StringLiteral, bytes: &[u8], pos: usize) -> bool {
     if !string.open_requires_line_end {
         return true;
     }
-    chars
-        .get(pos + string.open.chars().count()..)
-        .is_none_or(|rest| rest.iter().all(|c| c.is_whitespace()))
+    bytes
+        .get(pos + string.open.len()..)
+        .is_none_or(|rest| rest.iter().all(|b| b.is_ascii_whitespace()))
 }
 
 fn line_comment_matches(
-    chars: &[char],
+    bytes: &[u8],
     pos: usize,
     first_nonspace: Option<usize>,
     rule: &LineComment,
 ) -> bool {
-    if !scope_matches(
-        rule.scope,
-        chars,
-        pos,
-        first_nonspace,
-        rule.prefix.chars().count(),
-    ) {
+    if !scope_matches(rule.scope, bytes, pos, first_nonspace, rule.prefix.len()) {
         return false;
     }
     if rule.require_whitespace_before && pos > 0 {
-        let previous = chars[pos - 1];
-        if !previous.is_whitespace() && !matches!(previous, ';' | '|' | '&' | '(' | ')') {
+        let previous = bytes[pos - 1];
+        if !previous.is_ascii_whitespace() && !matches!(previous, b';' | b'|' | b'&' | b'(' | b')')
+        {
             return false;
         }
     }
     let matched = if rule.case_insensitive {
-        starts_with_ignore_case(chars, pos, rule.prefix)
+        starts_with_ignore_case(bytes, pos, rule.prefix)
     } else {
-        starts_with(chars, pos, rule.prefix)
+        starts_with(bytes, pos, rule.prefix)
     };
     if !matched {
         return false;
     }
     match rule.boundary_after {
         None => true,
-        Some(BoundaryAfter::Word) => chars
-            .get(pos + rule.prefix.chars().count())
-            .is_none_or(|c| !(c.is_alphanumeric() || *c == '_')),
-        Some(BoundaryAfter::Symbol) => chars
-            .get(pos + rule.prefix.chars().count())
-            .is_none_or(|c| !is_haskell_symbol(*c)),
+        Some(BoundaryAfter::Word) => bytes
+            .get(pos + rule.prefix.len())
+            .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_')),
+        Some(BoundaryAfter::Symbol) => bytes
+            .get(pos + rule.prefix.len())
+            .is_none_or(|b| !is_haskell_symbol(*b)),
     }
 }
 
 fn match_heredoc(
-    chars: &[char],
+    bytes: &[u8],
     pos: usize,
     syntax: &CompiledSyntax,
 ) -> Option<(usize, String, HeredocStrip)> {
-    for marker in &syntax.heredocs {
-        if !starts_with(chars, pos, marker) {
+    for rule in &syntax.heredocs {
+        if !starts_with(bytes, pos, rule.marker) {
             continue;
         }
         // `<<<` is a here-string in shells, not a heredoc.
-        if *marker == "<<" && chars.get(pos + 2) == Some(&'<') {
+        if rule.marker == "<<" && bytes.get(pos + 2) == Some(&b'<') {
             continue;
         }
-        let mut index = pos + marker.chars().count();
+        let mut index = pos + rule.marker.len();
         let mut strip = HeredocStrip::None;
-        match chars.get(index) {
-            Some('-') => {
+        match bytes.get(index) {
+            Some(b'-') => {
                 strip = HeredocStrip::Tabs;
                 index += 1;
             }
-            Some('~') => {
+            Some(b'~') => {
                 strip = HeredocStrip::Whitespace;
                 index += 1;
             }
             _ => {}
         }
-        // A whitespace after the marker is more likely an operator
-        // (`arr << x`, `x << 2`) than a heredoc; require the delimiter
-        // to follow directly.
-        if chars.get(index).is_some_and(|c| c.is_whitespace()) {
-            continue;
+        if bytes.get(index).is_some_and(|b| b.is_ascii_whitespace()) {
+            if !rule.allow_space {
+                continue;
+            }
+            while bytes.get(index).is_some_and(|b| b.is_ascii_whitespace()) {
+                index += 1;
+            }
         }
-        let quote = match chars.get(index) {
-            Some('\'') => Some('\''),
-            Some('"') => Some('"'),
+        let quote = match bytes.get(index) {
+            Some(b'\'') => Some(b'\''),
+            Some(b'"') => Some(b'"'),
             _ => None,
         };
         if quote.is_some() {
             index += 1;
         }
         let start = index;
-        if !chars
+        if !bytes
             .get(start)
-            .is_some_and(|current| current.is_alphabetic() || *current == '_')
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
         {
             continue;
         }
-        while index < chars.len() {
-            let current = chars[index];
-            if current.is_whitespace()
-                || matches!(current, ';' | '|' | '&' | '(' | ')')
+        if quote.is_none() && rule.require_uppercase && !bytes[start].is_ascii_uppercase() {
+            continue;
+        }
+        while index < bytes.len() {
+            let current = bytes[index];
+            if current.is_ascii_whitespace()
+                || matches!(current, b';' | b'|' | b'&' | b'(' | b')')
                 || Some(current) == quote
             {
                 break;
@@ -562,9 +612,9 @@ fn match_heredoc(
         if index == start {
             continue;
         }
-        let terminator: String = chars[start..index].iter().collect();
+        let terminator = String::from_utf8_lossy(&bytes[start..index]).into_owned();
         if let Some(quote) = quote {
-            if chars.get(index) != Some(&quote) {
+            if bytes.get(index) != Some(&quote) {
                 continue;
             }
             index += 1;
@@ -574,81 +624,114 @@ fn match_heredoc(
     None
 }
 
-fn match_char_literal(chars: &[char], pos: usize, rules: &[CharLiteral]) -> Option<usize> {
+fn match_raw_string(bytes: &[u8], pos: usize, rule: &RawString) -> Option<(usize, String)> {
+    if !rule.open.is_ascii() || !rule.close.is_ascii() {
+        return None;
+    }
+    let open = rule.open as u8;
+    let mut index = pos + rule.prefix.len();
+    let delimiter_start = index;
+    while index < bytes.len() {
+        let current = bytes[index];
+        if current == open {
+            break;
+        }
+        if index - delimiter_start >= 16
+            || current.is_ascii_whitespace()
+            || matches!(current, b'\\' | b')' | b'"' | b'{' | b'}')
+        {
+            return None;
+        }
+        index += 1;
+    }
+    if bytes.get(index) != Some(&open) {
+        return None;
+    }
+    let delimiter = std::str::from_utf8(&bytes[delimiter_start..index]).ok()?;
+    Some((index + 1, format!("{}{}\"", rule.close, delimiter)))
+}
+
+fn match_char_literal(bytes: &[u8], pos: usize, rules: &[CharLiteral]) -> Option<usize> {
     for rule in rules {
-        if chars.get(pos) != Some(&rule.quote) {
+        if !rule.quote.is_ascii() || bytes.get(pos) != Some(&(rule.quote as u8)) {
             continue;
         }
-        if let Some(end) = char_literal_end(chars, pos, *rule) {
+        if let Some(end) = char_literal_end(bytes, pos, *rule) {
             return Some(end);
         }
     }
     None
 }
 
-fn char_literal_end(chars: &[char], pos: usize, rule: CharLiteral) -> Option<usize> {
+fn char_literal_end(bytes: &[u8], pos: usize, rule: CharLiteral) -> Option<usize> {
+    let quote = rule.quote as u8;
     let index = pos + 1;
-    if index >= chars.len() {
+    if index >= bytes.len() {
         return None;
     }
-    if chars[index] == '\\' {
-        let limit = (index + 24).min(chars.len());
-        return chars[index + 1..limit]
+    if bytes[index] == b'\\' {
+        let limit = (index + 24).min(bytes.len());
+        return bytes[index + 1..limit]
             .iter()
-            .position(|character| *character == rule.quote)
+            .position(|current| *current == quote)
             .map(|offset| index + 1 + offset + 1);
     }
-    let limit = (pos + 2 + rule.max_len).min(chars.len());
-    for (offset, character) in chars[pos + 1..limit].iter().enumerate() {
-        if *character == rule.quote {
+    let limit = (pos + 2 + rule.max_len).min(bytes.len());
+    for (offset, current) in bytes[pos + 1..limit].iter().enumerate() {
+        if *current == quote {
             return Some(pos + 1 + offset + 1);
         }
-        if character.is_whitespace() {
+        if current.is_ascii_whitespace() {
             return None;
         }
     }
     None
 }
 
-fn is_haskell_symbol(character: char) -> bool {
+fn is_haskell_symbol(current: u8) -> bool {
     matches!(
-        character,
-        '!' | '#'
-            | '$'
-            | '%'
-            | '&'
-            | '*'
-            | '+'
-            | '.'
-            | '/'
-            | '<'
-            | '='
-            | '>'
-            | '?'
-            | '@'
-            | '\\'
-            | '^'
-            | '|'
-            | '-'
-            | '~'
-            | ':'
+        current,
+        b'!' | b'#'
+            | b'$'
+            | b'%'
+            | b'&'
+            | b'*'
+            | b'+'
+            | b'.'
+            | b'/'
+            | b'<'
+            | b'='
+            | b'>'
+            | b'?'
+            | b'@'
+            | b'\\'
+            | b'^'
+            | b'|'
+            | b'-'
+            | b'~'
+            | b':'
     )
 }
 
-/// Returns true if chars[pos..] starts with target
-fn starts_with(chars: &[char], pos: usize, target: &str) -> bool {
+/// Returns true if bytes[pos..] starts with target
+fn starts_with(bytes: &[u8], pos: usize, target: &str) -> bool {
     target
-        .chars()
+        .as_bytes()
+        .iter()
         .enumerate()
-        .all(|(offset, expected)| chars.get(pos + offset) == Some(&expected))
+        .all(|(offset, expected)| bytes.get(pos + offset) == Some(expected))
 }
 
-fn starts_with_ignore_case(chars: &[char], pos: usize, target: &str) -> bool {
-    target.chars().enumerate().all(|(offset, expected)| {
-        chars
-            .get(pos + offset)
-            .is_some_and(|actual| actual.eq_ignore_ascii_case(&expected))
-    })
+fn starts_with_ignore_case(bytes: &[u8], pos: usize, target: &str) -> bool {
+    target
+        .as_bytes()
+        .iter()
+        .enumerate()
+        .all(|(offset, expected)| {
+            bytes
+                .get(pos + offset)
+                .is_some_and(|actual| actual.eq_ignore_ascii_case(expected))
+        })
 }
 
 #[cfg(test)]
@@ -1009,5 +1092,113 @@ def hello():
         let stats = analyze_content(content, &rule);
         assert_eq!(stats.comment_lines, 3);
         assert_eq!(stats.mixed_lines, 1);
+    }
+
+    #[test]
+    fn test_cpp_raw_string_with_custom_delimiter() {
+        let rule = CommentRule::default()
+            .line_rule(LineComment::new("//"))
+            .block_rule(BlockComment::new("/*", "*/"))
+            .string_rule(StringLiteral::new("\""))
+            .raw_string_rule(RawString::cpp())
+            .char_rule('\'', 8);
+
+        let single = analyze_content(
+            "auto s = R\"delim(// not a comment \" still)delim\"; // real\n",
+            &rule,
+        );
+        assert_eq!(single.mixed_lines, 1);
+        assert_eq!(single.comment_lines, 0);
+
+        let multi = analyze_content("auto s = R\"x(\n// inside\n)x\";\n// real\n", &rule);
+        assert_eq!(multi.code_lines, 3);
+        assert_eq!(multi.comment_lines, 1);
+    }
+
+    #[test]
+    fn test_ruby_heredoc_and_shift_operator() {
+        let rule = CommentRule::default()
+            .line_rule(LineComment::new("#"))
+            .block_rule(
+                BlockComment::new("=begin", "=end")
+                    .at_start()
+                    .end_at_start(),
+            )
+            .string_rule(StringLiteral::new("\""))
+            .string_rule(StringLiteral::new("'"))
+            .string_rule(StringLiteral::new("`"))
+            .heredoc_rule(Heredoc::new("<<").require_uppercase());
+
+        let content = "arr << x\nsql = <<~SQL\n# body\nSQL\n# real\n";
+        let stats = analyze_content(content, &rule);
+        assert_eq!(stats.code_lines, 4);
+        assert_eq!(stats.comment_lines, 1);
+    }
+
+    #[test]
+    fn test_perl_heredoc_and_shift_operator() {
+        let rule = CommentRule::default()
+            .line_rule(LineComment::new("#"))
+            .string_rule(StringLiteral::new("\""))
+            .string_rule(StringLiteral::new("'"))
+            .heredoc_rule(Heredoc::new("<<").require_uppercase());
+
+        let content = "$x << 1;\nmy $s = <<EOF;\n# body\nEOF\n# real\n";
+        let stats = analyze_content(content, &rule);
+        assert_eq!(stats.code_lines, 4);
+        assert_eq!(stats.comment_lines, 1);
+    }
+
+    #[test]
+    fn test_shell_heredoc_with_space_after_marker() {
+        let rule = CommentRule::default()
+            .line_rule(LineComment::new("#").require_whitespace_before())
+            .string_rule(StringLiteral::new("\""))
+            .string_rule(StringLiteral::with_escape("'", "'", StringEscape::None))
+            .heredoc_rule(Heredoc::new("<<").allow_space());
+
+        let stats = analyze_content("cat << EOF\n# body\nEOF\n", &rule);
+        assert_eq!(stats.code_lines, 3);
+        assert_eq!(stats.comment_lines, 0);
+    }
+
+    #[test]
+    fn test_cobol_indicator_area() {
+        let rule = CommentRule::default()
+            .line_rule(LineComment::new("*").with_scope(LineScope::Column(6)))
+            .line_rule(LineComment::new("/").with_scope(LineScope::Column(6)))
+            .line_rule(LineComment::new("*>"))
+            .string_rule(StringLiteral::doubled("\"", "\""))
+            .string_rule(StringLiteral::doubled("'", "'"));
+
+        let content =
+            "      * fixed comment\n      / page comment\n           DISPLAY 'HI'. *> inline\n";
+        let stats = analyze_content(content, &rule);
+        assert_eq!(stats.comment_lines, 2);
+        assert_eq!(stats.mixed_lines, 1);
+    }
+
+    #[test]
+    fn test_sas_statement_comment_region() {
+        let rule = CommentRule::default()
+            .region_rule(RegionComment::new("*", ";").first_non_space())
+            .block_rule(BlockComment::new("/*", "*/"))
+            .string_rule(StringLiteral::doubled("\"", "\""))
+            .string_rule(StringLiteral::doubled("'", "'"));
+
+        let content = "* statement comment\ncontinues here;\ndata x;\n/* block */\n";
+        let stats = analyze_content(content, &rule);
+        assert_eq!(stats.comment_lines, 3);
+        assert_eq!(stats.code_lines, 1);
+    }
+
+    #[test]
+    fn test_unicode_content_does_not_panic() {
+        let rule = CommentRule::default()
+            .line_rule(LineComment::new("//"))
+            .string_rule(StringLiteral::new("\""));
+        let stats = analyze_content("// 中文注释\nlet s = \"中文 // 不是注释\";\n", &rule);
+        assert_eq!(stats.comment_lines, 1);
+        assert_eq!(stats.code_lines, 1);
     }
 }

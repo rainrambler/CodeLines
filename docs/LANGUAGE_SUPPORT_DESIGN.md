@@ -1,7 +1,7 @@
 # CodeLines Language Support — Design
 
-Status: **Phases 1–2 implemented** (122 languages). Phases 3–5 are proposed here
-and not yet implemented.
+Status: **Phases 1–3 and Phase 2b implemented** (132 languages). Phases 4–5 are
+proposed here and not yet implemented.
 
 This document describes how CodeLines grows from “a fixed list of languages with
 one hard-coded comment model” to a language platform that can absorb new
@@ -47,43 +47,46 @@ Related files:
 
 ```
 paths ──► scanner::scan_directory_with_progress ──► files_by_language
-                                                       │
-                                                       ▼
-                        language::supported_languages() ──► CommentRule
-                                                       │
-                                                       ▼
-                                    analyzer::CompiledSyntax (once per language)
-                                                       │
-                                                       ▼
-              analyzer::analyze_content_compiled(&str, &CompiledSyntax) ──► LineStats
-                                                       │
-                                                       ▼
-                                   output::build_summaries ──► Report ──► CLI / GUI
+             │                                      │
+             │ language::registry()                 ▼
+             │  filename → extension → hints     language::find_language_by_name
+             │  → shebang                        │
+             │                                   ▼
+             └─────────────────────► analyzer::CompiledSyntax (once per language)
+                                                 │
+                                                 ▼
+                    analyzer::analyze_content_compiled(&str, &CompiledSyntax) ──► LineStats
+                                                 │
+                                                 ▼
+                         output::build_summaries ──► Report ──► CLI / GUI
 ```
 
 Key properties:
 
-- `Language` holds a display name, extensions and a `CommentRule`.
-- `CommentRule` keeps the legacy fields (one line-prefix list, one block pair,
-  string delimiters) and adds detailed `line`, `blocks`, `strings`, `chars`,
-  `regions` and `heredocs` rule sets.
+- `Language` holds a display name, unambiguous and shared extensions, file
+  names, shebangs, disambiguation hints and a `CommentRule`.
+- `Registry` is built once with `OnceLock` and provides name, extension,
+  filename and shebang lookups.
+- `CommentRule` keeps the legacy fields and adds detailed `line`, `blocks`,
+  `strings`, `chars`, `regions` and `heredocs` rule sets.
 - `CompiledSyntax` merges legacy and detailed rules, sorts delimiters longest
   first, and is built once per language by `report::analyze`.
 - `analyze_content_compiled` keeps an explicit `Mode` across lines: normal,
   block (with nesting depth), string, region or heredoc.
-- `scanner` builds `extension → language name` once per scan; the GUI calls
-  `supported_languages()` again every frame to render the language filter.
+- The GUI calls `languages()` and no longer rebuilds the language list per
+  frame.
 
-Phase 1 extended the registry only. Phase 2 keeps the same pipeline but replaces
-the analyzer internals (compiled rules, explicit mode, detailed rule sets). The
-remaining sections describe the target architecture that later phases need.
+Phase 1 extended the registry only. Phase 2 replaced the analyzer internals.
+Phase 3 added cached lookup tables, filename/shebang detection and ambiguity
+resolution. Phases 4–5 are still future work.
 
 ---
 
 ## 3. Capability gaps
 
 The table records the gaps that motivated Phases 1–3. **Phase 2 closed gaps
-1–8, 12 and the analyzer half of 14**; gaps 9–11 and 13 remain open.
+1–8 and 12; Phase 3 closed gaps 9–10 and completed 14** (static registry).
+Gaps 11 (embedded languages) and 13 (docstring policy) remain open.
 
 Each gap below is a concrete correctness bug or a hard blocker for a new
 language.
@@ -103,16 +106,16 @@ language.
 | 11 | No embedded regions | Outer syntax applied to every line | HTML `<script>`/`<style>`, Vue/Svelte/Astro, JSX, Markdown fences |
 | 12 | One precedence order | String check always wins | Vim `"` comment vs string; Smalltalk `"..."` comment vs `'...'` string |
 | 13 | Docstrings counted as code | Policy is implicit | Python/Elixir/Crystal triple-quoted docstrings |
-| 14 | Registry rebuilt per call | Allocations in hot paths | `supported_languages()` builds 122 entries each call; GUI calls it per frame |
+| 14 | Registry rebuilt per call | Allocations in hot paths | `supported_languages()` built 132 entries per call; now cached in `OnceLock` |
 
 Two smaller issues already affect existing languages:
 
 - `.R` was registered next to `.r`; because the scanner lowercases extensions,
   only `.r` was reachable. Phase 1 removes the redundant entry and adds a test
   that rejects case-insensitive duplicate extensions.
-- `extension_map()` and the scanner’s `ext_to_lang` resolve duplicates
-  differently (first match vs last insert). A uniqueness guard removes the
-  ambiguity.
+- `extension_map()` and the scanner’s old `ext_to_lang` resolved duplicates
+  differently (first match vs last insert). Phase 3 replaces this with explicit
+  candidate lists and a uniqueness guard for unambiguous extensions.
 
 ---
 
@@ -131,30 +134,42 @@ Two smaller issues already affect existing languages:
 
 ---
 
-## 5. Rule model (Phase 2 implemented)
+## 5. Rule and detection model (Phases 2–3 implemented)
 
-### 5.1 Registry
-
-The block below is the Phase 3 target. The current `Language` struct still has
-only `name`, `extensions` and `comment_rule`.
+### 5.1 Registry (implemented)
 
 ```rust
 pub struct Language {
     pub name: &'static str,
-    /// Command-line / GUI aliases (case-insensitive): "js", "ts", "c++", ...
-    pub aliases: &'static [&'static str],
-    pub extensions: &'static [&'static str],
-    pub filenames: &'static [&'static str],
-    pub shebangs: &'static [&'static str],
-    pub rules: &'static [Rule],
-    pub options: LanguageOptions,
+    /// Unambiguous extensions.
+    pub extensions: Vec<&'static str>,
+    /// Shared extensions (e.g. ".m"); resolved by hints/preference.
+    pub ambiguous_extensions: Vec<&'static str>,
+    pub filenames: Vec<&'static str>,
+    pub shebangs: Vec<&'static str>,
+    /// Lowercase substrings used to disambiguate shared extensions.
+    pub hints: Vec<&'static str>,
+    pub comment_rule: CommentRule,
+}
+
+pub struct Registry {
+    languages: Vec<Language>,
+    by_name: HashMap<String, usize>,
+    by_extension: HashMap<String, Vec<usize>>,
+    by_filename: HashMap<String, usize>,
+    by_shebang: HashMap<&'static str, usize>,
 }
 ```
 
-The `OnceLock` registry and the filename/shebang fields are still Phase 3 work.
-Phase 2 keeps the existing `supported_languages() -> Vec<Language>` API, but
-`CompiledSyntax` is built once per language by `report::analyze`, so rules are
-not recompiled for every file.
+- `registry()` builds once with `OnceLock`; `languages()` returns a
+  `&'static [Language]`.
+- `supported_languages() -> Vec<Language>` remains as a compatibility snapshot.
+- Detection metadata is attached in `apply_detection_metadata`, keeping syntax
+  definitions and discovery metadata separate.
+- The GUI now calls `languages()` and no longer rebuilds 132 definitions per
+  frame.
+- `CompiledSyntax` is still built once per language by `report::analyze`.
+- Command-line aliases (`--lang js`) remain a future addition.
 
 ### 5.2 Rule schema (implemented)
 
@@ -221,7 +236,7 @@ line comment). This supports:
 - Smalltalk: `"..."` block comment, `'...'` string
 - Shell: `#` with boundary, `<<EOF` heredoc
 - Batch/VB: case-insensitive `REM`/`Rem` with a word boundary
-- Ruby: `#`, `=begin`/`=end` at column 0 (`%q` literals remain Phase 2b)
+- Ruby: `#`, `=begin`/`=end` at column 0 (`%q` literals are not modeled)
 - PowerShell: `@"..."@`/`@'...'@` here-strings, backtick escapes
 - Verilog: `//`, `/* */`, `"` strings, `'` allowed in numeric literals
 
@@ -260,60 +275,77 @@ Loop per line:
 Implemented properties:
 
 - **Compiled once per language** by `report::analyze`, not per file.
-- **Column tracking** on the raw line enables `StartOfLine`, `FirstNonSpace`
-  and `AloneOnLine` rules.
+- **Column tracking** on the raw line enables `StartOfLine`, `FirstNonSpace`,
+  `AloneOnLine` and `Column(n)` rules (COBOL column 7).
 - **Token boundaries** (`BoundaryAfter::Word`/`Symbol`, optional
   `require_whitespace_before`) fix Shell `${#var}`, Haskell `-->`, Batch `REM`
   and Vim `"` false positives.
 - **Multiple block rules** per language (Pascal, D, Lua, Ruby).
 - **Nested block comments** for Rust, Kotlin, Scala, Swift, D, Nim, OCaml,
   F#, Haskell-family languages and others.
-- **Raw/verbatim strings**: Rust `r#"..."#`, C++ `R"(...)"` (empty delimiter),
-  C# `@"..."`/`"""`, Go backticks, Nix `''...''`, Lua long strings.
+- **Raw/verbatim strings**: Rust `r#"..."#`, C++ `R"delim(...)delim"` with
+  dynamic delimiters, C# `@"..."`/`"""`, Go backticks, Nix `''...''`, Lua long
+  strings.
 - **Character literals** distinct from strings, with a look-ahead length limit,
   so Rust/OCaml/F# type variables and Ada/VHDL/Verilog attributes stay code.
 - **Doubled-quote escapes** for SQL, Smalltalk, Vim, Pascal, VB, PowerShell.
-- **Heredocs** (`<<`, `<<-`, `<<~`, `<<<`) for Shell and PHP; the body is code.
+- **Heredocs** for Shell (`<<`, `<<-`, `<< EOF`), PHP (`<<<`), Ruby
+  (`<<`, `<<-`, `<<~`) and Perl; the body is code.
 - **PowerShell here-strings** `@"..."@` / `@'...'@` with start-of-line closers.
-- **Line-oriented regions** for Ruby `=begin`/`=end` and Perl POD.
+- **Line-oriented regions** for Ruby `=begin`/`=end`, Perl POD and SAS
+  `* ... ;`.
+- **Byte-based scanner**: the parser reads `&[u8]`; UTF-8 continuation bytes
+  can never match an ASCII delimiter, so non-ASCII text is safe without a
+  per-line `Vec<char>`.
 
-Still deferred:
+Implementation notes:
 
-- Byte-based fast path for ASCII delimiters (the parser still builds a
-  `Vec<char>` per line).
-- Ruby/Perl heredocs (ambiguous with the `<<` operator) and C++ raw strings
-  with custom delimiters.
-- `AloneOnLine` is implemented but only used by MATLAB, which is still blocked
-  on the `.m` ambiguity.
+- Ruby/Perl unquoted heredoc delimiters must start with an uppercase letter;
+  quoted lowercase delimiters (`<<~'sql'`) are accepted. This keeps `arr << x`
+  and `$x << y` from being mistaken for heredocs.
+- C++ raw-string delimiters are limited to 16 characters, matching the
+  standard.
 - A line that continues a string/region counts as code, matching earlier
   behavior.
 
-### 5.4 Detection pipeline
+### 5.4 Detection pipeline (implemented)
 
 ```
 path
- ├─ 1. exact filename match        → Makefile, Dockerfile, CMakeLists.txt, BUILD
- ├─ 2. extension match (lowercase) → primary lookup
- ├─ 3. ambiguity resolution       → content hints, then preference table
- └─ 4. shebang match              → `#!/usr/bin/env python3`, `#!/bin/bash`
+ ├─ 1. exact filename / prefix    → Makefile, Dockerfile, CMakeLists.txt, BUILD
+ ├─ 2. extension candidates       → unambiguous: take it; shared: continue
+ ├─ 3. content hints              → lowercase substring score (8 KiB sample)
+ ├─ 4. preference table           → documented default for the extension
+ └─ 5. shebang (no extension)     → `#!/usr/bin/env python3`, `#!/bin/bash`
 ```
 
-Ambiguous extensions get an ordered candidate list plus cheap hints:
+- The language filter (`--lang`) is applied **before** ambiguity resolution, so
+  `--lang MATLAB` selects `.m` files as MATLAB even when their content would
+  hint Objective-C.
+- Shebang parsing handles `env`, `-S`, option arguments (`-u NAME`), Windows
+  `.exe` suffixes and version suffixes (`python3.11` → `python`).
+- An 8 KiB sample is read only for shared extensions and extensionless files;
+  unique extensions and filename matches never read a sample.
+- When no hint is conclusive, the preference table decides and the scanner
+  aggregates one diagnostic per `extension -> language` pair:
+  `Detection: N file(s) used the default language for ambiguous extension .m -> Objective-C`.
+- Unrecognized extensions and unresolved extensionless files still appear in
+  `unknown_extensions`.
+
+Shared extensions get candidate lists plus cheap hints:
 
 | Extension | Candidates | Hint |
 |-----------|------------|------|
-| `.m` | Objective-C, MATLAB, Mathematica | `@interface` / `function`+`%` / `(*` |
-| `.v` | Verilog, V, Coq | `module`/`endmodule`, `fn `, `Theorem` |
-| `.pl` | Perl, Prolog | `:-`, `use strict` |
+| `.m` | Objective-C, MATLAB, Mathematica | `@interface` / `classdef` / `(*` / `:=` |
+| `.v` | Verilog, V, Coq | `module`/`endmodule`, `fn `, `theorem ` |
+| `.pl` | Perl, Prolog | `use strict`, `:-` |
 | `.fs` | F#, Forth | `let `, `: ` |
 | `.cl` | OpenCL, Common Lisp | `__kernel`, `(defun` |
-| `.cls` | Apex, TeX/LaTeX | `@isTest`/`global class`, `\NeedsTeXFormat` |
+| `.cls` | Apex, TeX/LaTeX | `public class`, `\documentclass` |
 | `.pp` | Puppet, Free Pascal | `class `, `program ` |
 | `.pro` | QMake, Prolog | `TEMPLATE`, `:-` |
 
-Hinting stays intentionally small: a few substring checks, no parsing. When no
-hint is conclusive, use the preference table and record a diagnostic so users
-can see which language won.
+Hinting stays intentionally small: a few substring checks, no parsing.
 
 ### 5.5 Embedded regions
 
@@ -380,12 +412,13 @@ Known Phase 1 limitations (most were closed by Phase 2):
 - ~~Raw/verbatim strings are not modeled.~~ Closed for the main forms in Phase 2.
 - ~~Two block syntaxes use the dominant one.~~ Closed in Phase 2 (Pascal, D, Lua).
 - ~~`REM` in Visual Basic/Batch is not recognized.~~ Closed in Phase 2.
-- Filename-only languages (`Makefile`, `Dockerfile`) are still unknown (Phase 3).
+- ~~Filename-only languages (`Makefile`, `Dockerfile`) are still unknown.~~
+  Closed in Phase 3.
 
 Acceptance criteria met (at the end of Phase 1):
 
 - `cargo test -p codelines --lib` passes.
-- `cargo run -- --list` shows 120 entries (122 after Phase 2).
+- `cargo run -- --list` showed 120 entries (122 after Phase 2, 130 after Phase 3).
 - No duplicate extension in the registry.
 
 ### Phase 2 — Rule engine correctness (implemented)
@@ -413,8 +446,8 @@ Delivered:
   F#, Idris, Agda, PureScript, Elm, Dhall, Visual Basic and Pascal.
 - Added **Batch** and **Fortran (fixed form)**, bringing the registry to
   **122 languages**.
-- 15 new analyzer tests plus registry wiring tests (39 library tests total)
-  covering every acceptance case.
+- 15 new analyzer tests plus registry wiring tests (39 library tests at the end
+  of Phase 2; 44 after Phase 3).
 
 Acceptance criteria met:
 
@@ -427,27 +460,82 @@ Acceptance criteria met:
   **15.1 s before → 10.3 s after**. No regression; removing the per-comparison
   `Vec<char>` allocation more than offsets the extra rules.
 
-Remaining Phase 2b work:
+The Phase 2b items left after Phase 2 (Ruby/Perl heredocs, C++ raw delimiters,
+the byte matcher, COBOL and SAS) were completed in the Phase 2b cleanup pass
+below.
 
-- Ruby/Perl heredocs (ambiguous with `<<`) and C++ raw strings with custom
-  delimiters.
-- Heredoc delimiters must follow the marker directly and start with a letter or
-  underscore (`<<EOF`, not `<< EOF`); this avoids false positives on the `<<`
-  operator.
-- Byte-based matcher and a `OnceLock` registry to remove per-call allocation.
-- MATLAB `%{`/`%}` (blocked on `.m` ambiguity) and COBOL fixed-column rules.
+### Phase 3 — File-name and ambiguity detection (implemented)
 
-### Phase 3 — File-name and ambiguity detection
+Delivered:
 
-Scope: filename table, shebang parsing, candidate lists for ambiguous
-extensions, diagnostics for unresolved ambiguity.
+- `OnceLock<Registry>` with name, extension, filename and shebang lookup tables.
+- `languages()` returns a cached `&'static [Language]`; the GUI uses it instead
+  of rebuilding the language list every frame. `supported_languages()` remains
+  as a snapshot API.
+- Filename detection for `Makefile`, `GNUmakefile`, `Makefile.*`,
+  `Dockerfile`/`Dockerfile.*`, `Containerfile`/`Containerfile.*`,
+  `CMakeLists.txt`, `BUILD`/`BUILD.bazel`, `WORKSPACE`/`WORKSPACE.bazel`,
+  `Rakefile`, `Gemfile`, `Jenkinsfile`, `Pipfile`, `.editorconfig`,
+  `meson.build` and other common names.
+- Shebang detection for extensionless files, including `env`, `-S`, `-u NAME`,
+  `.exe` suffixes and version suffixes.
+- Candidate lists, content hints, preference table and aggregated diagnostics
+  for `.m`, `.v`, `.pl`, `.fs`, `.cl`, `.cls`, `.pp` and `.pro`.
+- Added **Makefile**, **Dockerfile**, **Meson**, **Objective-C**, **MATLAB**,
+  **V**, **Coq** and **Forth**, bringing the registry to **130 languages**.
+- Phase 3 tests: filename/shebang resolution, ambiguity hints, preference
+  fallback, metadata uniqueness, end-to-end detection and language-filter
+  interaction (44 library tests total).
 
-Acceptance criteria:
+Acceptance criteria met:
 
-- `Makefile`, `Dockerfile` and `CMakeLists.txt` are recognized.
+- `Makefile`, `Dockerfile`, `CMakeLists.txt`, `BUILD` and `WORKSPACE` are
+  recognized.
 - `#!/usr/bin/env python3` and `#!/bin/bash` files without extensions count.
-- `.m`/`.v`/`.pl` files resolve by hint or documented preference.
-- Unknown extensions still appear in diagnostics.
+- `.m`/`.v`/`.pl`/`.fs`/`.cl`/`.cls`/`.pp`/`.pro` resolve by hint or the
+  documented preference table.
+- Unknown extensions still appear in diagnostics; defaulted ambiguity
+  resolutions produce an aggregated detection note.
+- Benchmark on the same 1,900-file corpus (debug builds, 9 runs):
+  Phase 2 median **16.1 s** → Phase 3 median **15.6 s** (~3 % faster). No
+  regression.
+
+### Phase 2b — Deferred correctness and performance (implemented)
+
+Delivered:
+
+- **Byte-based scanner.** `parse_line` now scans `&[u8]` directly and no longer
+  allocates a `Vec<char>` per line. Delimiters are ASCII, and UTF-8
+  continuation bytes cannot match them.
+- **C++ raw strings with dynamic delimiters.** `R"delim(... )delim"` is parsed
+  into a `Mode::RawString` whose close marker is built from the delimiter
+  (maximum 16 characters).
+- **Heredoc rules with options.** `Heredoc { allow_space, require_uppercase }`
+  enables Shell `<< EOF`, PHP `<<< EOT`, Ruby `<<~SQL` and Perl `<<EOF` while
+  keeping `arr << x` and `$x << 1` as operators.
+- **COBOL fixed-column comments.** New `LineScope::Column(n)` handles the
+  column-7 `*`/`/` indicator; `*>` is recognized anywhere.
+- **SAS statement comments.** `* ... ;` is modeled as a region comment, and
+  `/* ... */` remains a block comment.
+- Added **COBOL** and **SAS**, bringing the registry to **132 languages**.
+- 7 new Phase 2b tests (51 library tests total: byte parsing, C++ raw strings,
+  Ruby/Perl heredocs, Shell spaced heredoc, COBOL, SAS, Unicode safety).
+
+Acceptance criteria met:
+
+- `R"delim(// not a comment \" still)delim"` is code, including multi-line.
+- Ruby `arr << x` and Perl `$x << 1` are not heredocs; `<<~SQL`/`<<EOF` are.
+- Shell `cat << EOF` starts a heredoc.
+- COBOL column-7 comments and `*>` inline comments classify correctly.
+- SAS `* ... ;` comments span lines and end at `;`.
+- Unicode content is classified without panics or delimiter false positives.
+- Benchmark on the 1,900-file corpus (debug, 9 runs): Phase 2 median
+  **12.9 s** → current median **9.85 s** (~24 % faster).
+
+Known limitation:
+
+- Ruby/Perl unquoted lowercase heredoc delimiters are not guessed; use an
+  uppercase or quoted delimiter (`<<~'sql'`).
 
 ### Phase 4 — Embedded and template languages
 
@@ -475,25 +563,12 @@ Acceptance criteria:
 
 ## 7. Language matrix
 
-Current registry (122). Phase 1 and Phase 2 groups are listed in section 6; the
-table below focuses on languages that are **not** covered and what blocks them.
+Current registry (132). Phase 1–3 and Phase 2b groups are listed in section 6;
+the table below focuses on languages that are **not** covered and what blocks
+them.
 
 | Language | Extensions | Blocker | Target phase |
 |----------|------------|---------|--------------|
-| Makefile | `Makefile`, `*.mk` | filename + tab-sensitive recipes | 3 (rule ready) |
-| Dockerfile | `Dockerfile`, `*.dockerfile` | filename | 3 |
-| Objective-C | `.m`, `.mm` | `.m` ambiguity | 3 |
-| MATLAB | `.m` | `.m` ambiguity, `%{ %}` alone-on-line blocks | 3 |
-| COBOL | `.cob`, `.cbl`, `.cpy` | fixed-column `*` indicator | 2b |
-| SAS | `.sas` | `* ... ;` region comment | 2b |
-| Ruby/Perl heredoc | `<<EOF` | ambiguous with the `<<` operator | 2b |
-| C++ delimited raw strings | `R"delim(...)delim"` | only the empty delimiter is modeled | 2b |
-| Common Lisp (`*.cl`) | `.cl` | `.cl` assigned to OpenCL; use `.lisp`/`.lsp` | 3 (hint) |
-| Prolog | `.pl`, `.pro` | extension conflicts (Perl, QMake); `.prolog` is covered | 3 |
-| LaTeX class files | `.cls` | `.cls` assigned to Apex | 3 (hint) |
-| V language | `.v` | `.v` assigned to Verilog | 3 (hint) |
-| Coq | `.v` | `.v` assigned to Verilog | 3 (hint) |
-| Forth | `.fs`, `.fth` | `.fs` assigned to F# | 3 (hint) |
 | Jupyter | `.ipynb` | JSON container, per-cell extraction | 4 |
 | ERB/EJS | `.erb`, `.ejs` | `<%# %>` regions + embedded Ruby/JS | 4 |
 | Haml/Slim | `.haml`, `.slim` | indentation-based templates | 4 |
@@ -520,17 +595,22 @@ Rules of thumb for future additions:
    blocks, Vim `"`, Smalltalk `"..."`, Shell `${#var}`/heredoc, Haskell `-->`,
    Batch `REM`, SQL strings, char literals, multiple block syntaxes, Lua long
    comments/strings, PowerShell here-strings and Perl POD.
-4. **Per-language golden fixtures** (Phase 3): one small file per language with
+4. **Phase 2b fixtures** (implemented): C++ raw strings with custom delimiters,
+   Ruby/Perl heredocs vs `<<`, Shell `<< EOF`, COBOL column 7, SAS `* ... ;`
+   and Unicode safety.
+5. **Phase 3 detection fixtures** (implemented): filename matches and prefixes,
+   shebang variants (`env`, `-S`, `-u NAME`, version suffixes), every ambiguous
+   extension hint, preference fallback, metadata uniqueness, end-to-end
+   detection and `--lang` interaction.
+6. **Per-language golden fixtures** (Phase 3b): one small file per language with
    a comment-only line, a code-only line, a mixed line, a blank line, and a
    literal containing a comment marker. Table-driven, so a new language without
    fixtures fails CI.
-5. **Ambiguity fixtures** (Phase 3): `.m`, `.v`, `.pl`, `.fs`, extensionless
-   files.
-6. **Embedded fixtures** (Phase 4): HTML with `<script>`/`<style>`, Vue SFC,
+7. **Embedded fixtures** (Phase 4): HTML with `<script>`/`<style>`, Vue SFC,
    Markdown fences.
-7. **Invariants**: `code + comment + mixed + blank == total` for every analyzed
+8. **Invariants**: `code + comment + mixed + blank == total` for every analyzed
    file in the fixture corpus.
-8. **Performance**: scan a fixed corpus before/after; fail on > 5 % regression.
+9. **Performance**: scan a fixed corpus before/after; fail on > 5 % regression.
    Keep `cargo clippy --workspace --all-targets` clean.
 
 ---
@@ -541,22 +621,27 @@ Rules of thumb for future additions:
   rebuild matcher tables.
 - `starts_with` no longer allocates a `Vec<char>` per comparison. On a
   1,900-file corpus this reduced a debug-build scan from 15.1 s to 10.3 s.
-- The registry is still rebuilt by `supported_languages()`, and the GUI still
-  calls it per frame. Moving it to `OnceLock` is Phase 2b and removes that cost.
-- The parser still builds one `Vec<char>` per line. A byte-based ASCII fast path
-  is Phase 2b.
+- Phase 3 builds the registry once with `OnceLock`. `languages()` is a static
+  slice, and the GUI no longer allocates 132 definitions per frame.
+- Per-file detection uses registry index slices; only shared extensions and
+  extensionless files allocate (a candidate `Vec` and an 8 KiB sample).
+- Phase 2b scans `&[u8]` and no longer allocates a `Vec<char>` per line.
+- Benchmark on the 1,900-file corpus (debug builds, 9 runs): Phase 2 median
+  **12.9 s** → current median **9.85 s** (~24 % faster).
 - The analyzer remains single-threaded per file; the GUI already runs it on a
-  worker thread. File-level parallelism is out of scope until the registry is
-  static and allocation-free.
+  worker thread. File-level parallelism is out of scope for now.
 
 ---
 
 ## 10. Backward compatibility
 
 - Existing display names and CLI `--lang` values are stable.
-- `supported_languages()` keeps its signature.
-- `CommentRule` keeps its legacy fields; the Phase 2 rule sets default to empty
-  and are merged by `CompiledSyntax`. Existing literals only need
+- `supported_languages()` keeps its signature; `languages()` is the new cached
+  slice API.
+- `CommentRule` keeps its legacy fields; the Phase 2/2b rule sets default to
+  empty and are merged by `CompiledSyntax`. `heredocs` remains
+  `Vec<&'static str>`; richer heredocs use `heredoc_rules`, and C++ raw strings
+  use the additive `raw_strings` field. Existing literals only need
   `..Default::default()`.
 - CSV/JSON export schemas do not change.
 - Statistics definitions (`effective = code + mixed`, `comment = comment +

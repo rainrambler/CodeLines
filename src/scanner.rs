@@ -56,6 +56,8 @@ pub struct ScanResult {
     pub files_by_language: HashMap<String, Vec<PathBuf>>,
     /// Unrecognized file extensions and their counts
     pub unknown_extensions: HashMap<String, usize>,
+    /// Ambiguous extension resolutions that used the default language
+    pub ambiguity_counts: HashMap<String, usize>,
     /// Number of skipped directories
     pub skipped_dirs: usize,
     /// Total files scanned
@@ -69,6 +71,7 @@ impl ScanResult {
         ScanResult {
             files_by_language: HashMap::new(),
             unknown_extensions: HashMap::new(),
+            ambiguity_counts: HashMap::new(),
             skipped_dirs: 0,
             total_files_scanned: 0,
             warnings: Vec::new(),
@@ -114,7 +117,6 @@ pub fn scan_directory_with_progress(
     mut on_file: impl FnMut(&Path),
 ) -> ScanResult {
     let mut result = ScanResult::new();
-    let all_langs = language::supported_languages();
 
     // Build filter sets
     let ignore_dir_set: HashSet<String> = DEFAULT_IGNORE_DIRS
@@ -129,27 +131,16 @@ pub fn scan_directory_with_progress(
         .chain(ignore_files.iter().cloned())
         .collect();
 
-    // Build language filter: if user specified languages, only include those
-    let filtered_langs: Vec<Language> = if languages_filter.is_empty() {
-        all_langs
+    let allowed: Option<HashSet<String>> = if languages_filter.is_empty() {
+        None
     } else {
-        all_langs
-            .into_iter()
-            .filter(|l| {
-                languages_filter
-                    .iter()
-                    .any(|f| l.name.eq_ignore_ascii_case(f))
-            })
-            .collect()
+        Some(
+            languages_filter
+                .iter()
+                .map(|name| name.to_ascii_lowercase())
+                .collect(),
+        )
     };
-
-    // Build extension → language name lookup table
-    let mut ext_to_lang: HashMap<String, String> = HashMap::new();
-    for lang in &filtered_langs {
-        for ext in &lang.extensions {
-            ext_to_lang.insert(ext.to_lowercase(), lang.name.to_string());
-        }
-    }
 
     // Shared between the per-root walkers; `ignore`'s filter callback must be
     // `'static`, so the sets are reference-counted rather than borrowed.
@@ -170,7 +161,7 @@ pub fn scan_directory_with_progress(
         if root_path.is_file() {
             result.total_files_scanned += 1;
             on_file(root_path);
-            process_file(root_path, &ext_to_lang, &mut result);
+            process_file(root_path, allowed.as_ref(), &mut result);
             continue;
         }
 
@@ -205,7 +196,7 @@ pub fn scan_directory_with_progress(
                     if e.file_type().is_some_and(|ft| ft.is_file()) {
                         result.total_files_scanned += 1;
                         on_file(e.path());
-                        process_file(e.path(), &ext_to_lang, &mut result);
+                        process_file(e.path(), allowed.as_ref(), &mut result);
                     }
                 }
                 Err(err) => {
@@ -217,37 +208,152 @@ pub fn scan_directory_with_progress(
         }
     }
 
+    let mut notes: Vec<_> = result.ambiguity_counts.drain().collect();
+    notes.sort();
+    for (resolution, count) in notes {
+        result.warnings.push(format!(
+            "Detection: {count} file(s) used the default language for ambiguous extension \
+             {resolution} (no content hint)"
+        ));
+    }
+
     result
 }
 
-/// Process a single file: identify language and classify
-fn process_file(path: &Path, ext_to_lang: &HashMap<String, String>, result: &mut ScanResult) {
-    match path.extension() {
-        Some(ext_os) => {
-            let ext_str = format!(".{}", ext_os.to_string_lossy());
-            let ext_lower = ext_str.to_lowercase();
+/// Result of resolving a single path.
+#[derive(Debug)]
+enum Detection {
+    Language(&'static Language),
+    /// A shared extension was resolved; `hinted` is false when the preference
+    /// table had to be used.
+    Ambiguous {
+        language: &'static Language,
+        extension: String,
+        hinted: bool,
+    },
+    /// The file was recognized but excluded by the language filter.
+    Filtered,
+    Unknown(String),
+}
 
-            match ext_to_lang.get(&ext_lower) {
-                Some(lang_name) => {
-                    result
-                        .files_by_language
-                        .entry(lang_name.clone())
-                        .or_default()
-                        .push(path.to_path_buf());
-                }
-                None => {
-                    *result.unknown_extensions.entry(ext_str).or_insert(0) += 1;
+/// Process a single file: identify language and classify
+fn process_file(path: &Path, allowed: Option<&HashSet<String>>, result: &mut ScanResult) {
+    match detect_language(path, allowed) {
+        Detection::Language(language) => push_file(result, path, language),
+        Detection::Ambiguous {
+            language,
+            extension,
+            hinted,
+        } => {
+            if !hinted {
+                let key = format!("{extension} -> {}", language.name);
+                *result.ambiguity_counts.entry(key).or_insert(0) += 1;
+            }
+            push_file(result, path, language);
+        }
+        Detection::Filtered => {}
+        Detection::Unknown(extension) => {
+            *result.unknown_extensions.entry(extension).or_insert(0) += 1;
+        }
+    }
+}
+
+fn push_file(result: &mut ScanResult, path: &Path, language: &Language) {
+    result
+        .files_by_language
+        .entry(language.name.to_string())
+        .or_default()
+        .push(path.to_path_buf());
+}
+
+fn detect_language(path: &Path, allowed: Option<&HashSet<String>>) -> Detection {
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    if let Some(language) = language::language_for_filename(&filename) {
+        return if is_allowed(language, allowed) {
+            Detection::Language(language)
+        } else {
+            Detection::Filtered
+        };
+    }
+
+    let extension = path
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()));
+    let mut sample: Option<String> = None;
+
+    if let Some(extension) = &extension {
+        let registry = language::registry();
+        let indices = registry.extension_indices(extension);
+        if indices.is_empty() {
+            return Detection::Unknown(extension.clone());
+        }
+
+        let mut allowed_count = 0;
+        let mut only_allowed = None;
+        for &index in indices {
+            let language = registry.language(index);
+            if is_allowed(language, allowed) {
+                allowed_count += 1;
+                only_allowed = Some(language);
+            }
+        }
+
+        match allowed_count {
+            0 => return Detection::Filtered,
+            1 => return Detection::Language(only_allowed.unwrap()),
+            _ => {
+                let candidates: Vec<&'static Language> = indices
+                    .iter()
+                    .map(|&index| registry.language(index))
+                    .filter(|language| is_allowed(language, allowed))
+                    .collect();
+                let content = sample.get_or_insert_with(|| read_sample(path));
+                if let Some((language, hinted)) =
+                    language::resolve_ambiguous_extension(extension, &candidates, content)
+                {
+                    return Detection::Ambiguous {
+                        language,
+                        extension: extension.clone(),
+                        hinted,
+                    };
                 }
             }
         }
-        None => {
-            // Files without an extension, skip
-            *result
-                .unknown_extensions
-                .entry("(no extension)".to_string())
-                .or_insert(0) += 1;
+    } else {
+        // Only extensionless files are checked for a shebang; this keeps image
+        // and binary files from being read unnecessarily.
+        let content = sample.get_or_insert_with(|| read_sample(path));
+        if let Some(language) = content
+            .lines()
+            .next()
+            .and_then(language::language_for_shebang)
+        {
+            return if is_allowed(language, allowed) {
+                Detection::Language(language)
+            } else {
+                Detection::Filtered
+            };
         }
     }
+
+    Detection::Unknown(extension.unwrap_or_else(|| "(no extension)".to_string()))
+}
+
+fn is_allowed(language: &Language, allowed: Option<&HashSet<String>>) -> bool {
+    allowed.is_none_or(|allowed| allowed.contains(&language.name.to_ascii_lowercase()))
+}
+
+fn read_sample(path: &Path) -> String {
+    use std::io::Read;
+
+    let mut content = Vec::new();
+    if let Ok(file) = fs::File::open(path) {
+        let _ = file.take(8192).read_to_end(&mut content);
+    }
+    String::from_utf8_lossy(&content).into_owned()
 }
 
 /// Read file content from disk.

@@ -131,7 +131,7 @@ impl CodeLinesApp {
             respect_gitignore: true,
             selected_languages: BTreeSet::new(),
             language_search: String::new(),
-            total_languages: language::supported_languages().len(),
+            total_languages: language::languages().len(),
             view: ViewState::default(),
             worker: None,
             report: None,
@@ -326,10 +326,7 @@ impl CodeLinesApp {
     }
 
     fn set_language(&mut self, name: &str, checked: bool) {
-        let all: Vec<&'static str> = language::supported_languages()
-            .iter()
-            .map(|lang| lang.name)
-            .collect();
+        let all: Vec<&'static str> = language::languages().iter().map(|lang| lang.name).collect();
 
         if checked {
             if self.selected_languages.is_empty() {
@@ -647,7 +644,7 @@ impl CodeLinesApp {
             .show(ui, |ui| {
                 let needle = self.language_search.trim().to_lowercase();
                 let mut shown = 0;
-                for lang in language::supported_languages() {
+                for lang in language::languages() {
                     if !needle.is_empty() && !lang.name.to_lowercase().contains(&needle) {
                         continue;
                     }
@@ -1117,7 +1114,7 @@ fn diagnostics_tab(ui: &mut Ui, report: &Report) {
                         "Cancelled",
                         if report.cancelled { "yes" } else { "no" }.to_string(),
                     ),
-                    ("Warnings", format_number(report.warnings.len())),
+                    ("Warnings / notes", format_number(report.warnings.len())),
                 ];
                 for (label, value) in rows {
                     ui.label(RichText::new(label).size(11.0).color(theme::muted(ui)));
@@ -1173,13 +1170,16 @@ fn diagnostics_tab(ui: &mut Ui, report: &Report) {
     ui.add_space(12.0);
     card_ui(ui, |ui| {
         ui.label(
-            RichText::new(format!("Warnings ({})", report.warnings.len()))
-                .size(13.0)
-                .strong(),
+            RichText::new(format!(
+                "Warnings & detection notes ({})",
+                report.warnings.len()
+            ))
+            .size(13.0)
+            .strong(),
         );
         ui.add_space(4.0);
         if report.warnings.is_empty() {
-            widgets::hint(ui, "No warnings — every file was read successfully.");
+            widgets::hint(ui, "No warnings or detection notes.");
         } else {
             for warning in &report.warnings {
                 ui.label(RichText::new(warning).size(10.5).color(theme::MIXED));

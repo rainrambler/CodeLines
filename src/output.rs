@@ -275,9 +275,27 @@ pub fn print_csv_table(summaries: &[LanguageSummary]) {
 /// Print the list of all supported languages
 pub fn print_supported_languages() {
     println!("\nSupported languages and file extensions:\n");
-    for lang in language::supported_languages() {
-        let exts = lang.extensions.join(", ");
+    for lang in language::languages() {
+        let exts = if lang.extensions.is_empty() {
+            "-".to_string()
+        } else {
+            lang.extensions.join(", ")
+        };
         println!("  {:<24} {}", format!("[{}]", lang.name), exts);
+
+        let mut details = Vec::new();
+        if !lang.filenames.is_empty() {
+            details.push(format!("files: {}", lang.filenames.join(", ")));
+        }
+        if !lang.ambiguous_extensions.is_empty() {
+            details.push(format!(
+                "ambiguous: {}",
+                lang.ambiguous_extensions.join(", ")
+            ));
+        }
+        if !details.is_empty() {
+            println!("  {:<24} {}", "", details.join("; "));
+        }
     }
     println!();
 }

@@ -6,9 +6,10 @@ Count lines of code, comments, and blanks across your entire project — intelli
 
 ## Features
 
-- **122 Languages Supported** — Rust, C/C++, C#, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, PHP, Lua, Haskell, SQL, HTML/CSS, Markdown, plus CUDA, OpenCL, GLSL/HLSL/Metal, Verilog/VHDL, Solidity, Move, Zig, Nim, Nix, HCL/Terraform, PowerShell, Dart, Elixir, Erlang, Julia, Fortran, Ada, Vue, Svelte and many more. Run `codelines --list` for the full list.
+- **132 Languages Supported** — Rust, C/C++, C#, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, PHP, Lua, Haskell, SQL, HTML/CSS, Markdown, plus CUDA, OpenCL, GLSL/HLSL/Metal, Verilog/VHDL, Solidity, Move, Zig, Nim, Nix, HCL/Terraform, PowerShell, Dart, Elixir, Erlang, Julia, Fortran, COBOL, SAS, Ada, Vue, Svelte and many more. Run `codelines --list` for the full list.
+- **File-Name & Shebang Detection** — recognizes `Makefile`, `Dockerfile`, `CMakeLists.txt`, `BUILD`/`WORKSPACE`, `Rakefile`, `Gemfile`, `Jenkinsfile` and extensionless scripts via `#!` lines. Ambiguous extensions (`.m`, `.v`, `.pl`, `.fs`, `.cl`, `.cls`, `.pp`, `.pro`) are resolved by content hints with a documented preference table.
 - **Smart Comment Detection** — Distinguishes line comments (`//`, `#`, `--`, `%`, etc.) and block comments (`/* */`, `""" """`, `<!-- -->`, `{- -}`, etc.) per language, including **nested blocks** (Rust, Kotlin, Scala, Swift, D, OCaml, Haskell family) and multiple block syntaxes (Pascal, D, Lua).
-- **String-Aware Parsing** — Correctly ignores comment-like markers inside raw/verbatim strings (`r#"..."#`, `@"..."`, `"""..."""`), character literals, heredocs and PowerShell here-strings. Rust lifetimes (`&'a str`), Verilog literals (`4'b1010`) and Ada/VHDL attributes are not treated as strings.
+- **String-Aware Parsing** — Correctly ignores comment-like markers inside raw/verbatim strings (`r#"..."#`, C++ `R"delim(...)delim"`, `@"..."`, `"""..."""`), character literals, heredocs (Shell, PHP, Ruby, Perl) and PowerShell here-strings. Rust lifetimes (`&'a str`), Verilog literals (`4'b1010`) and Ada/VHDL attributes are not treated as strings.
 - **Line Classification** — Each line is classified as: **code**, **comment**, **mixed** (code + comment), or **blank**.
 - **Recursive Directory Scanning** — Walks entire directory trees with sensible defaults that skip VCS directories, build artifacts, and dependency folders.
 - **`.gitignore` Aware** — Honours `.gitignore` files (including nested ones and those in parent directories); disable with `--no-gitignore` or the GUI checkbox.
@@ -126,7 +127,7 @@ Total                      16       2100       1500        330        270    71.
 
 ## How It Works
 
-1. **Scan** — Recursively walks directories, identifying files by extension using built-in language definitions and skipping paths matched by `.gitignore` rules.
+1. **Detect** — Recursively walks directories (honouring `.gitignore`) and resolves each file by exact name/prefix (`Makefile`, `Dockerfile`, `CMakeLists.txt`, `BUILD`), then by extension. Shared extensions (`.m`, `.v`, `.pl`, `.fs`, `.cl`, `.cls`, `.pp`, `.pro`) use content hints and a preference table; extensionless files fall back to their `#!` line.
 2. **Read** — Loads file contents from disk.
 3. **Analyze** — Parses each line with language-specific comment rules, tracking block comment and multi-line string state across lines.
 4. **Aggregate** — Sums statistics per language and globally.

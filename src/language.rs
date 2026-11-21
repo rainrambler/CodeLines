@@ -1,6 +1,7 @@
 /// Language definition module: defines file extensions and comment rules
 /// for each supported programming language.
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Controls where on a line a rule may start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -14,6 +15,8 @@ pub enum LineScope {
     FirstNonSpace,
     /// Match only when the rest of the line is whitespace.
     AloneOnLine,
+    /// Match only at the given zero-based byte column (COBOL indicator area).
+    Column(usize),
 }
 
 /// Extra condition on the character following a line-comment prefix.
@@ -197,7 +200,8 @@ impl CharLiteral {
     }
 }
 
-/// A comment region delimited by line-oriented markers (Ruby `=begin`/`=end`, Perl POD).
+/// A comment region delimited by line-oriented markers (Ruby `=begin`/`=end`,
+/// Perl POD, SAS `* ... ;`).
 #[derive(Debug, Clone)]
 pub struct RegionComment {
     pub start: &'static str,
@@ -221,9 +225,68 @@ impl RegionComment {
         self
     }
 
+    pub fn first_non_space(mut self) -> Self {
+        self.start_scope = LineScope::FirstNonSpace;
+        self
+    }
+
     pub fn end_at_start(mut self) -> Self {
         self.end_scope = LineScope::StartOfLine;
         self
+    }
+}
+
+/// A heredoc rule (`<<EOF`, `<<~SQL`, `<<<EOT`).
+#[derive(Debug, Clone)]
+pub struct Heredoc {
+    pub marker: &'static str,
+    /// Allow whitespace between the marker and the delimiter (`<< EOF`).
+    pub allow_space: bool,
+    /// Require an unquoted delimiter to start with an uppercase letter. This
+    /// keeps `arr << x` / `$x << y` from being mistaken for a heredoc.
+    pub require_uppercase: bool,
+}
+
+impl Heredoc {
+    pub fn new(marker: &'static str) -> Self {
+        Self {
+            marker,
+            allow_space: false,
+            require_uppercase: false,
+        }
+    }
+
+    pub fn allow_space(mut self) -> Self {
+        self.allow_space = true;
+        self
+    }
+
+    pub fn require_uppercase(mut self) -> Self {
+        self.require_uppercase = true;
+        self
+    }
+}
+
+/// A language-specific raw string with a dynamic delimiter, currently C++:
+/// `R"delimiter( ... )delimiter"`.
+#[derive(Debug, Clone)]
+pub struct RawString {
+    pub prefix: &'static str,
+    pub open: char,
+    pub close: char,
+}
+
+impl RawString {
+    pub fn new(prefix: &'static str, open: char, close: char) -> Self {
+        Self {
+            prefix,
+            open,
+            close,
+        }
+    }
+
+    pub fn cpp() -> Self {
+        Self::new("R\"", '(', ')')
     }
 }
 
@@ -248,12 +311,16 @@ pub struct CommentRule {
     pub blocks: Vec<BlockComment>,
     /// Detailed string-literal rules.
     pub strings: Vec<StringLiteral>,
+    /// Raw strings with a dynamic delimiter (C++ `R"..."`).
+    pub raw_strings: Vec<RawString>,
     /// Character-literal rules.
     pub chars: Vec<CharLiteral>,
     /// Line-oriented comment regions.
     pub regions: Vec<RegionComment>,
-    /// Heredoc markers, e.g. `<<` or `<<<`.
+    /// Simple heredoc markers, e.g. `<<` or `<<<` (legacy field).
     pub heredocs: Vec<&'static str>,
+    /// Heredoc rules with whitespace/case options.
+    pub heredoc_rules: Vec<Heredoc>,
 }
 
 impl CommentRule {
@@ -272,6 +339,11 @@ impl CommentRule {
         self
     }
 
+    pub fn raw_string_rule(mut self, rule: RawString) -> Self {
+        self.raw_strings.push(rule);
+        self
+    }
+
     pub fn char_rule(mut self, quote: char, max_len: usize) -> Self {
         self.chars.push(CharLiteral::new(quote, max_len));
         self
@@ -286,15 +358,28 @@ impl CommentRule {
         self.heredocs.push(marker);
         self
     }
+
+    pub fn heredoc_rule(mut self, rule: Heredoc) -> Self {
+        self.heredoc_rules.push(rule);
+        self
+    }
 }
 
 /// Describes a supported language
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Language {
     /// Display name of the language
     pub name: &'static str,
-    /// File extensions (including dot, e.g. ".rs")
+    /// Unambiguous file extensions (including dot, e.g. ".rs")
     pub extensions: Vec<&'static str>,
+    /// Extensions shared with at least one other language (e.g. ".m")
+    pub ambiguous_extensions: Vec<&'static str>,
+    /// Exact file names (e.g. "Makefile", "Dockerfile", "CMakeLists.txt")
+    pub filenames: Vec<&'static str>,
+    /// Interpreter names found in `#!` lines (e.g. "python", "bash")
+    pub shebangs: Vec<&'static str>,
+    /// Lowercase substrings used to disambiguate shared extensions
+    pub hints: Vec<&'static str>,
     /// Comment rules
     pub comment_rule: CommentRule,
 }
@@ -302,7 +387,30 @@ pub struct Language {
 impl Language {
     /// Returns true if the given file extension belongs to this language
     pub fn matches_extension(&self, ext: &str) -> bool {
-        self.extensions.iter().any(|e| e.eq_ignore_ascii_case(ext))
+        self.extensions
+            .iter()
+            .chain(self.ambiguous_extensions.iter())
+            .any(|e| e.eq_ignore_ascii_case(ext))
+    }
+
+    pub fn with_ambiguous_extensions(mut self, extensions: &[&'static str]) -> Self {
+        self.ambiguous_extensions.extend_from_slice(extensions);
+        self
+    }
+
+    pub fn with_filenames(mut self, filenames: &[&'static str]) -> Self {
+        self.filenames.extend_from_slice(filenames);
+        self
+    }
+
+    pub fn with_shebangs(mut self, shebangs: &[&'static str]) -> Self {
+        self.shebangs.extend_from_slice(shebangs);
+        self
+    }
+
+    pub fn with_hints(mut self, hints: &[&'static str]) -> Self {
+        self.hints.extend_from_slice(hints);
+        self
     }
 }
 
@@ -331,6 +439,7 @@ fn language(
         name,
         extensions,
         comment_rule,
+        ..Default::default()
     }
 }
 
@@ -384,9 +493,9 @@ fn html_comment() -> CommentRule {
     rule(vec![], Some(("<!--", "-->")), vec!["\"", "'"])
 }
 
-/// Returns the list of all supported languages
-pub fn supported_languages() -> Vec<Language> {
-    vec![
+/// Built-in language definitions. Use [`languages`] to read the cached registry.
+fn language_definitions() -> Vec<Language> {
+    let mut languages = vec![
         // ─── Rust ───
         Language {
             name: "Rust",
@@ -400,6 +509,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::raw("r##\"", "\"##"))
                 .string_rule(StringLiteral::raw("r###\"", "\"###"))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── C / C++ ───
         Language {
@@ -411,8 +521,9 @@ pub fn supported_languages() -> Vec<Language> {
                 .line_rule(LineComment::new("//"))
                 .block_rule(BlockComment::new("/*", "*/"))
                 .string_rule(StringLiteral::new("\""))
-                .string_rule(StringLiteral::raw("R\"(", ")\""))
+                .raw_string_rule(RawString::cpp())
                 .char_rule('\'', 8),
+            ..Default::default()
         },
         // ─── Java ───
         Language {
@@ -424,6 +535,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::new("\"\"\""))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── Kotlin ───
         Language {
@@ -435,6 +547,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::raw("\"\"\"", "\"\"\""))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── Scala ───
         Language {
@@ -446,6 +559,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::raw("\"\"\"", "\"\"\""))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── Go ───
         Language {
@@ -457,6 +571,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::raw("`", "`"))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── Swift ───
         Language {
@@ -467,6 +582,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .block_rule(BlockComment::new("/*", "*/").nested())
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::new("\"\"\"")),
+            ..Default::default()
         },
         // ─── Python ───
         Language {
@@ -479,6 +595,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'", "\"\"\"", "'''"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Ruby ───
         Language {
@@ -493,7 +610,9 @@ pub fn supported_languages() -> Vec<Language> {
                 )
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::new("'"))
-                .string_rule(StringLiteral::new("`")),
+                .string_rule(StringLiteral::new("`"))
+                .heredoc_rule(Heredoc::new("<<").require_uppercase()),
+            ..Default::default()
         },
         // ─── JavaScript / TypeScript ───
         Language {
@@ -505,6 +624,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::new("'"))
                 .string_rule(StringLiteral::new("`")),
+            ..Default::default()
         },
         // ─── C# ───
         Language {
@@ -520,6 +640,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::raw("\"\"\"", "\"\"\""))
                 .string_rule(StringLiteral::raw("$\"\"\"", "\"\"\""))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── PHP ───
         Language {
@@ -531,7 +652,8 @@ pub fn supported_languages() -> Vec<Language> {
                 .block_rule(BlockComment::new("/*", "*/"))
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::new("'"))
-                .heredoc("<<<"),
+                .heredoc_rule(Heredoc::new("<<<").allow_space()),
+            ..Default::default()
         },
         // ─── Shell ───
         Language {
@@ -541,7 +663,8 @@ pub fn supported_languages() -> Vec<Language> {
                 .line_rule(LineComment::new("#").require_whitespace_before())
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::with_escape("'", "'", StringEscape::None))
-                .heredoc("<<"),
+                .heredoc_rule(Heredoc::new("<<").allow_space()),
+            ..Default::default()
         },
         // ─── Batch ───
         language(
@@ -569,7 +692,9 @@ pub fn supported_languages() -> Vec<Language> {
                 .line_rule(LineComment::new("#"))
                 .region_rule(RegionComment::new("=", "=cut").at_start().end_at_start())
                 .string_rule(StringLiteral::new("\""))
-                .string_rule(StringLiteral::new("'")),
+                .string_rule(StringLiteral::new("'"))
+                .heredoc_rule(Heredoc::new("<<").require_uppercase()),
+            ..Default::default()
         },
         // ─── Lua ───
         Language {
@@ -585,6 +710,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::raw("[[", "]]"))
                 .string_rule(StringLiteral::raw("[=[", "]=]"))
                 .string_rule(StringLiteral::raw("[==[", "]==]")),
+            ..Default::default()
         },
         // ─── HTML ───
         Language {
@@ -597,6 +723,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── CSS ───
         Language {
@@ -609,6 +736,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── SQL ───
         Language {
@@ -619,6 +747,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .block_rule(BlockComment::new("/*", "*/"))
                 .string_rule(StringLiteral::doubled("'", "'"))
                 .string_rule(StringLiteral::doubled("\"", "\"")),
+            ..Default::default()
         },
         // ─── Haskell ───
         Language {
@@ -629,6 +758,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .block_rule(BlockComment::new("{-", "-}").nested())
                 .string_rule(StringLiteral::new("\""))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── Zig ───
         language(
@@ -646,6 +776,7 @@ pub fn supported_languages() -> Vec<Language> {
             comment_rule: CommentRule::default()
                 .line_rule(LineComment::new("\""))
                 .string_rule(StringLiteral::doubled("'", "'").single_line()),
+            ..Default::default()
         },
         // ─── TOML ───
         Language {
@@ -657,6 +788,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("'"))
                 .string_rule(StringLiteral::new("\"\"\""))
                 .string_rule(StringLiteral::raw("'''", "'''")),
+            ..Default::default()
         },
         // ─── YAML ───
         Language {
@@ -666,6 +798,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .line_rule(LineComment::new("#").require_whitespace_before())
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::doubled("'", "'")),
+            ..Default::default()
         },
         // ─── XML ───
         Language {
@@ -678,6 +811,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Dart ───
         Language {
@@ -690,6 +824,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("'"))
                 .string_rule(StringLiteral::new("\"\"\""))
                 .string_rule(StringLiteral::new("'''")),
+            ..Default::default()
         },
         // ─── R ───
         Language {
@@ -702,6 +837,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Elixir ───
         Language {
@@ -714,6 +850,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Erlang ───
         Language {
@@ -726,6 +863,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Julia ───
         Language {
@@ -737,6 +875,7 @@ pub fn supported_languages() -> Vec<Language> {
                 .string_rule(StringLiteral::new("\""))
                 .string_rule(StringLiteral::new("\"\"\""))
                 .char_rule('\'', 1),
+            ..Default::default()
         },
         // ─── Fortran ───
         language(
@@ -777,6 +916,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'", "`"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Markdown ───
         Language {
@@ -789,6 +929,7 @@ pub fn supported_languages() -> Vec<Language> {
                 string_delimiters: vec!["\"", "'", "`"],
                 ..Default::default()
             },
+            ..Default::default()
         },
         // ─── Additional C-family languages ───
         language("CUDA", vec![".cu", ".cuh"], c_style()),
@@ -1170,20 +1311,580 @@ pub fn supported_languages() -> Vec<Language> {
             vec![".astro"],
             rule(vec!["//"], Some(("<!--", "-->")), vec!["\"", "'", "`"]),
         ),
-    ]
+        // ─── File-name driven languages ───
+        language(
+            "Makefile",
+            vec![".mk", ".mak"],
+            CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'")),
+        ),
+        language(
+            "Dockerfile",
+            vec![".dockerfile"],
+            CommentRule::default()
+                .line_rule(LineComment::first_non_space("#"))
+                .string_rule(StringLiteral::new("\"")),
+        ),
+        language(
+            "Meson",
+            vec![],
+            CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .string_rule(StringLiteral::new("'"))
+                .string_rule(StringLiteral::new("\"")),
+        ),
+        // ─── Ambiguous-extension languages ───
+        language(
+            "Objective-C",
+            vec![".mm"],
+            CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::doubled("@\"", "\""))
+                .char_rule('\'', 1),
+        ),
+        language(
+            "MATLAB",
+            vec![],
+            CommentRule::default()
+                .line_rule(LineComment::new("%"))
+                .block_rule(
+                    BlockComment::new("%{", "%}")
+                        .alone_on_line()
+                        .end_alone_on_line(),
+                )
+                .string_rule(StringLiteral::doubled("\"", "\""))
+                .char_rule('\'', 256),
+        ),
+        language(
+            "V",
+            vec![],
+            CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
+        ),
+        language(
+            "Coq",
+            vec![],
+            CommentRule::default()
+                .block_rule(BlockComment::new("(*", "*)").nested())
+                .string_rule(StringLiteral::new("\"")),
+        ),
+        language(
+            "Forth",
+            vec![".fth", ".forth"],
+            CommentRule::default()
+                .line_rule(LineComment::new("\\").require_whitespace_before())
+                .block_rule(BlockComment::new("(", ")")),
+        ),
+        // ─── Fixed-column and statement-comment languages ───
+        language(
+            "COBOL",
+            vec![".cob", ".cbl", ".cpy"],
+            CommentRule::default()
+                .line_rule(LineComment::new("*").with_scope(LineScope::Column(6)))
+                .line_rule(LineComment::new("/").with_scope(LineScope::Column(6)))
+                .line_rule(LineComment::new("*>"))
+                .string_rule(StringLiteral::doubled("\"", "\""))
+                .string_rule(StringLiteral::doubled("'", "'")),
+        ),
+        language(
+            "SAS",
+            vec![".sas"],
+            CommentRule::default()
+                .region_rule(RegionComment::new("*", ";").first_non_space())
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::doubled("\"", "\""))
+                .string_rule(StringLiteral::doubled("'", "'")),
+        ),
+    ];
+    apply_detection_metadata(&mut languages);
+    languages
 }
 
-/// Find the language definition matching a file extension
+/// Attach file-name, shebang, ambiguity and hint metadata to the definitions.
+fn apply_detection_metadata(languages: &mut [Language]) {
+    for language in languages {
+        match language.name {
+            "Python" => {
+                language.shebangs = vec!["python", "pypy", "xonsh", "uv"];
+                language.filenames = vec!["SConstruct", "SConscript"];
+            }
+            "Shell" => {
+                language.shebangs = vec!["sh", "bash", "zsh", "dash", "ksh"];
+                language.filenames = vec![
+                    ".bashrc",
+                    ".bash_profile",
+                    ".bash_login",
+                    ".profile",
+                    ".zshrc",
+                    ".zprofile",
+                    ".zshenv",
+                ];
+            }
+            "Fish" => language.shebangs = vec!["fish"],
+            "Nushell" => language.shebangs = vec!["nu"],
+            "JavaScript/TypeScript" => {
+                language.shebangs = vec!["node", "deno", "bun", "tsx", "ts-node"];
+            }
+            "Ruby" => {
+                language.shebangs = vec!["ruby"];
+                language.filenames = vec![
+                    "Rakefile",
+                    "Gemfile",
+                    "Guardfile",
+                    "Vagrantfile",
+                    "Podfile",
+                    "Brewfile",
+                    "Fastfile",
+                    "Appfile",
+                    "Dangerfile",
+                    "config.ru",
+                ];
+            }
+            "Perl" => {
+                language.shebangs = vec!["perl"];
+                language.hints = vec!["use strict", "use warnings", "my $", "sub ", "package "];
+            }
+            "Raku" => language.shebangs = vec!["raku", "perl6"],
+            "PHP" => language.shebangs = vec!["php"],
+            "PowerShell" => language.shebangs = vec!["pwsh", "powershell"],
+            "Lua" => language.shebangs = vec!["lua", "luajit"],
+            "R" => language.shebangs = vec!["rscript"],
+            "Julia" => language.shebangs = vec!["julia"],
+            "Elixir" => language.shebangs = vec!["elixir"],
+            "Erlang" => language.shebangs = vec!["escript"],
+            "AWK" => language.shebangs = vec!["awk", "gawk", "mawk", "nawk"],
+            "Tcl" => language.shebangs = vec!["tclsh", "wish"],
+            "Scheme/Racket" => {
+                language.shebangs = vec!["racket", "guile", "scheme", "gosh"];
+            }
+            "Common Lisp" => {
+                language.shebangs = vec!["sbcl", "clisp", "ecl", "ccl"];
+                language.ambiguous_extensions = vec![".cl"];
+                language.hints = vec![
+                    "(defun",
+                    "(defmacro",
+                    "(defvar",
+                    "(in-package",
+                    "(format",
+                    "(let",
+                ];
+            }
+            "Clojure" => language.shebangs = vec!["bb"],
+            "Crystal" => language.shebangs = vec!["crystal"],
+            "Dart" => language.shebangs = vec!["dart"],
+            "Groovy" => {
+                language.shebangs = vec!["groovy"];
+                language.filenames = vec!["Jenkinsfile"];
+            }
+            "Kotlin" => language.shebangs = vec!["kotlin", "kotlinc"],
+            "Scala" => language.shebangs = vec!["scala"],
+            "Swift" => language.shebangs = vec!["swift"],
+            "Haskell" => language.shebangs = vec!["runhaskell", "runghc"],
+            "OCaml/Standard ML" => language.shebangs = vec!["ocaml"],
+            "Starlark" => {
+                language.filenames = vec!["BUILD", "BUILD.bazel", "WORKSPACE", "WORKSPACE.bazel"];
+            }
+            "CMake" => language.filenames = vec!["CMakeLists.txt"],
+            "TOML" => language.filenames = vec!["Pipfile"],
+            "INI" => language.filenames = vec![".editorconfig"],
+            "Makefile" => {
+                language.filenames = vec!["Makefile", "GNUmakefile"];
+            }
+            "Dockerfile" => language.filenames = vec!["Dockerfile", "Containerfile"],
+            "Meson" => language.filenames = vec!["meson.build", "meson_options.txt"],
+            "Verilog/SystemVerilog" => {
+                language.hints = vec![
+                    "module ",
+                    "endmodule",
+                    "always @",
+                    "assign ",
+                    "wire ",
+                    "reg ",
+                    "input ",
+                    "output ",
+                ];
+            }
+            "Objective-C" => {
+                language.ambiguous_extensions = vec![".m"];
+                language.hints = vec![
+                    "@interface",
+                    "@implementation",
+                    "@end",
+                    "#import",
+                    "@protocol",
+                    "@property",
+                    "@synthesize",
+                ];
+            }
+            "MATLAB" => {
+                language.ambiguous_extensions = vec![".m"];
+                language.shebangs = vec!["matlab", "octave"];
+                language.hints = vec![
+                    "classdef",
+                    "function ",
+                    "properties",
+                    "methods",
+                    "%{",
+                    "disp(",
+                    "plot(",
+                    "zeros(",
+                ];
+            }
+            "Mathematica" => {
+                language.ambiguous_extensions = vec![".m"];
+                language.hints = vec![
+                    "(*",
+                    "module[",
+                    "clear[",
+                    ":=",
+                    "plot[",
+                    "table[",
+                    "simplify[",
+                ];
+            }
+            "V" => {
+                language.ambiguous_extensions = vec![".v"];
+                language.hints = vec!["fn ", "pub fn", "struct ", "import ", "mut ", "println("];
+            }
+            "Coq" => {
+                language.ambiguous_extensions = vec![".v"];
+                language.hints = vec![
+                    "theorem ",
+                    "lemma ",
+                    "proof.",
+                    "qed.",
+                    "require import",
+                    "definition ",
+                    "inductive ",
+                ];
+            }
+            "F#" => {
+                language.hints = vec!["let ", "module ", "open ", "type ", "namespace ", "[<"];
+            }
+            "Forth" => {
+                language.ambiguous_extensions = vec![".fs"];
+                language.hints = vec![": ", "variable ", "constant ", "create ", "\\ "];
+            }
+            "OpenCL" => {
+                language.hints = vec![
+                    "__kernel",
+                    "__global",
+                    "__local",
+                    "kernel void",
+                    "cl_kernel",
+                    "#pragma opencl",
+                ];
+            }
+            "Apex" => {
+                language.hints = vec![
+                    "@istest",
+                    "global class",
+                    "public class",
+                    "private class",
+                    "trigger ",
+                    "system.debug",
+                ];
+            }
+            "TeX/LaTeX" => {
+                language.ambiguous_extensions = vec![".cls"];
+                language.hints = vec![
+                    "\\documentclass",
+                    "\\usepackage",
+                    "\\providesclass",
+                    "\\loadclass",
+                    "\\needstexformat",
+                    "\\providecommand",
+                ];
+            }
+            "Puppet" => {
+                language.hints = vec![
+                    "class ",
+                    "define ",
+                    "node ",
+                    "include ",
+                    "=>",
+                    "$facts",
+                    "package {",
+                ];
+            }
+            "Pascal" => {
+                language.ambiguous_extensions = vec![".pp"];
+                language.hints = vec![
+                    "program ",
+                    "unit ",
+                    "interface",
+                    "implementation",
+                    "begin",
+                    "end.",
+                ];
+            }
+            "QMake" => {
+                language.hints = vec![
+                    "template",
+                    "target",
+                    "sources",
+                    "headers",
+                    "qt +=",
+                    "config +=",
+                    "greaterthan(",
+                ];
+            }
+            "Prolog" => {
+                language.ambiguous_extensions = vec![".pl", ".pro"];
+                language.hints = vec![":-", "?-", "module(", "use_module", ":- module"];
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Preference used when content hints cannot disambiguate an extension.
+const EXTENSION_PREFERENCE: &[(&str, &str)] = &[
+    (".m", "Objective-C"),
+    (".v", "Verilog/SystemVerilog"),
+    (".pl", "Perl"),
+    (".fs", "F#"),
+    (".cl", "OpenCL"),
+    (".cls", "Apex"),
+    (".pp", "Puppet"),
+    (".pro", "QMake"),
+];
+
+/// File-name prefixes recognized in addition to exact file names.
+const FILENAME_PREFIXES: &[(&str, &str)] = &[
+    ("dockerfile.", "Dockerfile"),
+    ("containerfile.", "Dockerfile"),
+    ("makefile.", "Makefile"),
+];
+
+#[derive(Debug)]
+pub struct Registry {
+    languages: Vec<Language>,
+    by_name: HashMap<String, usize>,
+    by_extension: HashMap<String, Vec<usize>>,
+    by_filename: HashMap<String, usize>,
+    by_shebang: HashMap<&'static str, usize>,
+}
+
+impl Registry {
+    fn build() -> Self {
+        let languages = language_definitions();
+        let mut by_name = HashMap::new();
+        let mut by_extension: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_filename = HashMap::new();
+        let mut by_shebang = HashMap::new();
+
+        for (index, language) in languages.iter().enumerate() {
+            by_name.insert(language.name.to_ascii_lowercase(), index);
+            for extension in language
+                .extensions
+                .iter()
+                .chain(language.ambiguous_extensions.iter())
+            {
+                by_extension
+                    .entry(extension.to_ascii_lowercase())
+                    .or_default()
+                    .push(index);
+            }
+            for filename in &language.filenames {
+                by_filename.insert(filename.to_ascii_lowercase(), index);
+            }
+            for shebang in &language.shebangs {
+                by_shebang.insert(*shebang, index);
+            }
+        }
+
+        Self {
+            languages,
+            by_name,
+            by_extension,
+            by_filename,
+            by_shebang,
+        }
+    }
+
+    pub fn languages(&self) -> &[Language] {
+        &self.languages
+    }
+
+    pub fn language(&self, index: usize) -> &Language {
+        &self.languages[index]
+    }
+
+    pub fn language_by_name(&self, name: &str) -> Option<&Language> {
+        self.by_name
+            .get(&name.to_ascii_lowercase())
+            .map(|&index| self.language(index))
+    }
+
+    /// Indices into [`Registry::languages`] for the given extension.
+    pub fn extension_indices(&self, extension: &str) -> &[usize] {
+        self.by_extension
+            .get(&normalize_extension(extension))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    pub fn language_by_filename(&self, filename: &str) -> Option<&Language> {
+        let lower = filename.to_ascii_lowercase();
+        if let Some(&index) = self.by_filename.get(&lower) {
+            return Some(self.language(index));
+        }
+        for (prefix, name) in FILENAME_PREFIXES {
+            if !lower.starts_with(prefix) {
+                continue;
+            }
+            if let Some(language) = self.language_by_name(name) {
+                return Some(language);
+            }
+        }
+        None
+    }
+
+    pub fn language_by_shebang(&self, name: &str) -> Option<&Language> {
+        self.by_shebang.get(name).map(|&index| self.language(index))
+    }
+}
+
+static REGISTRY: OnceLock<Registry> = OnceLock::new();
+
+/// Cached language registry, built once per process.
+pub fn registry() -> &'static Registry {
+    REGISTRY.get_or_init(Registry::build)
+}
+
+/// Cached language list. Prefer this over [`supported_languages`] in
+/// long-running front-ends.
+pub fn languages() -> &'static [Language] {
+    registry().languages()
+}
+
+/// Returns a snapshot of all supported languages.
+pub fn supported_languages() -> Vec<Language> {
+    languages().to_vec()
+}
+
+/// Find a language by display name (case-insensitive).
+pub fn find_language_by_name(name: &str) -> Option<&'static Language> {
+    registry().language_by_name(name)
+}
+
+/// All languages that can claim the given extension.
+pub fn candidates_for_extension(extension: &str) -> Vec<&'static Language> {
+    let registry = registry();
+    registry
+        .extension_indices(extension)
+        .iter()
+        .map(|&index| registry.language(index))
+        .collect()
+}
+
+/// Find the preferred language for an extension.
 pub fn find_language_by_ext(ext: &str) -> Option<Language> {
-    supported_languages()
-        .into_iter()
-        .find(|lang| lang.matches_extension(ext))
+    let candidates = candidates_for_extension(ext);
+    preferred_candidate(ext, &candidates).cloned()
 }
 
-/// Build extension → language name mapping table
+/// Find a language by exact file name or recognized file-name prefix.
+pub fn language_for_filename(filename: &str) -> Option<&'static Language> {
+    registry().language_by_filename(filename)
+}
+
+/// Find a language from a `#!` line.
+pub fn language_for_shebang(line: &str) -> Option<&'static Language> {
+    let registry = registry();
+    let mut tokens = line.trim_start().strip_prefix("#!")?.split_whitespace();
+    let mut program = tokens.next()?;
+    let mut name = executable_name(program);
+
+    if name == "env" {
+        loop {
+            let token = tokens.next()?;
+            if token == "-S" || token == "--split-string" {
+                continue;
+            }
+            if matches!(token, "-u" | "--unset" | "-C" | "--chdir") {
+                tokens.next();
+                continue;
+            }
+            if token.starts_with('-') {
+                continue;
+            }
+            if token.contains('=') && !token.starts_with('/') && !token.starts_with('\\') {
+                continue;
+            }
+            program = token;
+            break;
+        }
+        name = executable_name(program);
+    }
+
+    if let Some(language) = registry.language_by_shebang(name.as_str()) {
+        return Some(language);
+    }
+    let versionless = name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    if versionless == name {
+        return None;
+    }
+    registry.language_by_shebang(versionless)
+}
+
+/// Resolve a shared extension using content hints, then the preference table.
+///
+/// The boolean is `true` when a content hint decided the language.
+pub fn resolve_ambiguous_extension(
+    extension: &str,
+    candidates: &[&'static Language],
+    content: &str,
+) -> Option<(&'static Language, bool)> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let preferred = preferred_candidate(extension, candidates);
+    let lower = content.to_ascii_lowercase();
+    let mut best: Option<(usize, &'static Language)> = None;
+
+    for candidate in candidates {
+        let score = candidate
+            .hints
+            .iter()
+            .filter(|hint| lower.contains(*hint))
+            .count();
+        if score == 0 {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some((best_score, best_language)) => {
+                score > best_score
+                    || (score == best_score
+                        && preferred.is_some_and(|preferred| {
+                            preferred.name == candidate.name && preferred.name != best_language.name
+                        }))
+            }
+        };
+        if replace {
+            best = Some((score, candidate));
+        }
+    }
+
+    if let Some((_, language)) = best {
+        return Some((language, true));
+    }
+    preferred.map(|language| (language, false))
+}
+
+/// Build extension → language name mapping table for unambiguous extensions.
 pub fn extension_map() -> HashMap<&'static str, &'static str> {
     let mut map = HashMap::new();
-    for lang in supported_languages() {
+    for lang in languages() {
         for ext in &lang.extensions {
             map.insert(*ext, lang.name);
         }
@@ -1193,7 +1894,37 @@ pub fn extension_map() -> HashMap<&'static str, &'static str> {
 
 /// Get the list of all supported language names
 pub fn list_language_names() -> Vec<&'static str> {
-    supported_languages().iter().map(|l| l.name).collect()
+    languages().iter().map(|l| l.name).collect()
+}
+
+fn normalize_extension(extension: &str) -> String {
+    let lower = extension.to_ascii_lowercase();
+    if lower.starts_with('.') {
+        lower
+    } else {
+        format!(".{lower}")
+    }
+}
+
+fn preferred_candidate<'a>(extension: &str, candidates: &[&'a Language]) -> Option<&'a Language> {
+    let preferred = EXTENSION_PREFERENCE
+        .iter()
+        .find(|(ext, _)| ext.eq_ignore_ascii_case(extension))
+        .map(|(_, name)| *name);
+    preferred
+        .and_then(|name| {
+            candidates
+                .iter()
+                .copied()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(name))
+        })
+        .or_else(|| candidates.first().copied())
+}
+
+fn executable_name(program: &str) -> String {
+    let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let lower = base.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
 }
 
 #[cfg(test)]
@@ -1265,6 +1996,8 @@ mod tests {
             (".svelte", "Svelte"),
             (".bat", "Batch"),
             (".f", "Fortran (fixed form)"),
+            (".cob", "COBOL"),
+            (".sas", "SAS"),
         ] {
             let language = find_language_by_ext(extension)
                 .unwrap_or_else(|| panic!("no language for {extension}"));
@@ -1340,5 +2073,156 @@ mod tests {
         let perl = stats_for(".pl", "=pod\n# pod\n=cut\nprint 1; # real\n");
         assert_eq!(perl.comment_lines, 3);
         assert_eq!(perl.mixed_lines, 1);
+
+        let cpp = stats_for(".cpp", "auto s = R\"x(// not a comment)x\"; // real\n");
+        assert_eq!(cpp.mixed_lines, 1);
+
+        let ruby = stats_for(".rb", "arr << x\nsql = <<~SQL\n# body\nSQL\n# real\n");
+        assert_eq!(ruby.code_lines, 4);
+        assert_eq!(ruby.comment_lines, 1);
+
+        let perl_heredoc = stats_for(".pl", "$x << 1;\nmy $s = <<EOF;\n# body\nEOF\n# real\n");
+        assert_eq!(perl_heredoc.code_lines, 4);
+        assert_eq!(perl_heredoc.comment_lines, 1);
+
+        let cobol = stats_for(
+            ".cob",
+            "      * comment\n           DISPLAY 'HI'. *> inline\n",
+        );
+        assert_eq!(cobol.comment_lines, 1);
+        assert_eq!(cobol.mixed_lines, 1);
+
+        let sas = stats_for(".sas", "* comment\nstill comment;\ndata x;\n");
+        assert_eq!(sas.comment_lines, 2);
+        assert_eq!(sas.code_lines, 1);
+    }
+
+    #[test]
+    fn phase_three_metadata_is_unique_and_reachable() {
+        let mut filenames = HashMap::new();
+        let mut shebangs = HashMap::new();
+
+        for language in languages() {
+            assert!(
+                !language.extensions.is_empty()
+                    || !language.ambiguous_extensions.is_empty()
+                    || !language.filenames.is_empty(),
+                "{} cannot be detected",
+                language.name
+            );
+            let mut own_extensions = HashSet::new();
+            for extension in language
+                .extensions
+                .iter()
+                .chain(language.ambiguous_extensions.iter())
+            {
+                assert!(
+                    own_extensions.insert(extension.to_ascii_lowercase()),
+                    "{} lists {extension} twice",
+                    language.name
+                );
+            }
+            for filename in &language.filenames {
+                let key = filename.to_ascii_lowercase();
+                assert!(
+                    filenames.insert(key.clone(), language.name).is_none(),
+                    "duplicate file name {key}"
+                );
+            }
+            for shebang in &language.shebangs {
+                assert!(
+                    shebangs.insert(*shebang, language.name).is_none(),
+                    "duplicate shebang {shebang}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn detects_filenames_and_shebangs() {
+        for (filename, expected) in [
+            ("Makefile", "Makefile"),
+            ("makefile", "Makefile"),
+            ("Makefile.am", "Makefile"),
+            ("Dockerfile", "Dockerfile"),
+            ("Dockerfile.dev", "Dockerfile"),
+            ("Containerfile", "Dockerfile"),
+            ("CMakeLists.txt", "CMake"),
+            ("BUILD.bazel", "Starlark"),
+            ("WORKSPACE", "Starlark"),
+            ("Rakefile", "Ruby"),
+            ("Gemfile", "Ruby"),
+            ("Jenkinsfile", "Groovy"),
+            ("Pipfile", "TOML"),
+            (".editorconfig", "INI"),
+            ("meson.build", "Meson"),
+        ] {
+            let language = language_for_filename(filename)
+                .unwrap_or_else(|| panic!("no language for {filename}"));
+            assert_eq!(language.name, expected, "wrong language for {filename}");
+        }
+        assert!(language_for_filename("unknown.txt").is_none());
+
+        for (line, expected) in [
+            ("#!/usr/bin/env python3", "Python"),
+            ("#!/usr/bin/python3.11", "Python"),
+            ("#!/usr/bin/env -u NAME python3", "Python"),
+            ("#!/bin/bash", "Shell"),
+            (
+                "#!/usr/bin/env -S node --experimental",
+                "JavaScript/TypeScript",
+            ),
+            ("#!/usr/bin/env perl6", "Raku"),
+            ("#!/usr/bin/env sbcl", "Common Lisp"),
+            ("#!/usr/bin/env octave", "MATLAB"),
+        ] {
+            let language =
+                language_for_shebang(line).unwrap_or_else(|| panic!("no language for {line}"));
+            assert_eq!(language.name, expected, "wrong language for {line}");
+        }
+        assert!(language_for_shebang("not a shebang").is_none());
+        assert!(language_for_shebang("#!/usr/bin/env").is_none());
+    }
+
+    #[test]
+    fn resolves_ambiguous_extensions_by_hint_or_preference() {
+        for (extension, content, expected) in [
+            (".m", "@interface Foo\n@end", "Objective-C"),
+            (".m", "classdef Calc\nend", "MATLAB"),
+            (".m", "f[x_] := x^2", "Mathematica"),
+            (".v", "module top;\nendmodule", "Verilog/SystemVerilog"),
+            (".v", "fn main() {}", "V"),
+            (".v", "Theorem plus_0 : forall n, n + 0 = n.", "Coq"),
+            (".pl", "use strict;\nuse warnings;", "Perl"),
+            (".pl", ":- module(foo).", "Prolog"),
+            (".fs", "let x = 1", "F#"),
+            (".fs", ": square dup * ;", "Forth"),
+            (".cl", "__kernel void add()", "OpenCL"),
+            (".cl", "(defun add (x y) (+ x y))", "Common Lisp"),
+            (".cls", "public class Foo {", "Apex"),
+            (".cls", "\\documentclass{article}", "TeX/LaTeX"),
+            (".pp", "class web {", "Puppet"),
+            (".pp", "program Hello;", "Pascal"),
+            (".pro", "TEMPLATE = app", "QMake"),
+            (".pro", ":- module(foo).", "Prolog"),
+        ] {
+            let candidates = candidates_for_extension(extension);
+            assert!(
+                candidates.len() >= 2,
+                "{extension} should have multiple candidates"
+            );
+            let (language, hinted) =
+                resolve_ambiguous_extension(extension, &candidates, content).unwrap();
+            assert_eq!(
+                language.name, expected,
+                "wrong hint result for {extension}: {content}"
+            );
+            assert!(hinted, "{extension} should be resolved by a hint");
+        }
+
+        let (language, hinted) =
+            resolve_ambiguous_extension(".m", &candidates_for_extension(".m"), "x = 1;").unwrap();
+        assert_eq!(language.name, "Objective-C");
+        assert!(!hinted, "no hint should fall back to the preference table");
     }
 }
