@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::analyzer::{LineStats, analyze_content};
+use crate::analyzer::{CompiledSyntax, LineStats, analyze_content_compiled};
 use crate::language;
 use crate::output::{LanguageSummary, build_summaries, total_summary};
 use crate::scanner::{read_file_content, scan_directory_with_progress};
@@ -170,6 +170,7 @@ pub fn analyze(
         let paths = &scan.files_by_language[lang_name];
         file_counts.insert(lang_name.clone(), paths.len());
 
+        let syntax = CompiledSyntax::new(&lang_def.comment_rule);
         let mut lang_stats = LineStats::default();
         for path in paths {
             if is_cancelled() {
@@ -179,7 +180,7 @@ pub fn analyze(
 
             match read_file_content(path) {
                 Ok(content) => {
-                    let stats = analyze_content(&content, &lang_def.comment_rule);
+                    let stats = analyze_content_compiled(&content, &syntax);
                     lang_stats += stats.clone();
                     files.push(FileEntry {
                         path: path.clone(),

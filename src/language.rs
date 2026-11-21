@@ -2,8 +2,237 @@
 /// for each supported programming language.
 use std::collections::HashMap;
 
-/// Describes the comment rules for a language
+/// Controls where on a line a rule may start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LineScope {
+    /// Match anywhere on the line.
+    #[default]
+    Anywhere,
+    /// Match only at column 0.
+    StartOfLine,
+    /// Match only at the first non-whitespace character.
+    FirstNonSpace,
+    /// Match only when the rest of the line is whitespace.
+    AloneOnLine,
+}
+
+/// Extra condition on the character following a line-comment prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundaryAfter {
+    /// The next character must not be a letter, digit, or underscore.
+    Word,
+    /// The next character must not be a Haskell-style symbol character.
+    Symbol,
+}
+
+/// A line comment such as `//`, `#` or `--`.
 #[derive(Debug, Clone)]
+pub struct LineComment {
+    pub prefix: &'static str,
+    pub scope: LineScope,
+    pub case_insensitive: bool,
+    pub boundary_after: Option<BoundaryAfter>,
+    pub require_whitespace_before: bool,
+}
+
+impl LineComment {
+    pub fn new(prefix: &'static str) -> Self {
+        Self {
+            prefix,
+            scope: LineScope::Anywhere,
+            case_insensitive: false,
+            boundary_after: None,
+            require_whitespace_before: false,
+        }
+    }
+
+    pub fn at_start(prefix: &'static str) -> Self {
+        Self::new(prefix).with_scope(LineScope::StartOfLine)
+    }
+
+    pub fn first_non_space(prefix: &'static str) -> Self {
+        Self::new(prefix).with_scope(LineScope::FirstNonSpace)
+    }
+
+    pub fn with_scope(mut self, scope: LineScope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    pub fn case_insensitive(mut self) -> Self {
+        self.case_insensitive = true;
+        self
+    }
+
+    pub fn with_boundary_after(mut self, boundary: BoundaryAfter) -> Self {
+        self.boundary_after = Some(boundary);
+        self
+    }
+
+    pub fn require_whitespace_before(mut self) -> Self {
+        self.require_whitespace_before = true;
+        self
+    }
+}
+
+/// A block comment such as `/* ... */` or `{- ... -}`.
+#[derive(Debug, Clone)]
+pub struct BlockComment {
+    pub start: &'static str,
+    pub end: &'static str,
+    pub nested: bool,
+    pub start_scope: LineScope,
+    pub end_scope: LineScope,
+}
+
+impl BlockComment {
+    pub fn new(start: &'static str, end: &'static str) -> Self {
+        Self {
+            start,
+            end,
+            nested: false,
+            start_scope: LineScope::Anywhere,
+            end_scope: LineScope::Anywhere,
+        }
+    }
+
+    pub fn nested(mut self) -> Self {
+        self.nested = true;
+        self
+    }
+
+    pub fn at_start(mut self) -> Self {
+        self.start_scope = LineScope::StartOfLine;
+        self
+    }
+
+    pub fn end_at_start(mut self) -> Self {
+        self.end_scope = LineScope::StartOfLine;
+        self
+    }
+
+    pub fn alone_on_line(mut self) -> Self {
+        self.start_scope = LineScope::AloneOnLine;
+        self
+    }
+
+    pub fn end_alone_on_line(mut self) -> Self {
+        self.end_scope = LineScope::AloneOnLine;
+        self
+    }
+}
+
+/// How escape sequences are written inside a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StringEscape {
+    None,
+    Backslash,
+    Backtick,
+    /// A doubled closing delimiter escapes itself (`""`, `''`).
+    DoubledQuote,
+}
+
+/// A string literal rule.
+#[derive(Debug, Clone)]
+pub struct StringLiteral {
+    pub open: &'static str,
+    pub close: &'static str,
+    pub escape: StringEscape,
+    pub multiline: bool,
+    pub close_scope: LineScope,
+    /// When true, the opening delimiter must be followed only by whitespace.
+    pub open_requires_line_end: bool,
+}
+
+impl StringLiteral {
+    pub fn new(delimiter: &'static str) -> Self {
+        Self::with_escape(delimiter, delimiter, StringEscape::Backslash)
+    }
+
+    pub fn raw(open: &'static str, close: &'static str) -> Self {
+        Self::with_escape(open, close, StringEscape::None)
+    }
+
+    pub fn doubled(open: &'static str, close: &'static str) -> Self {
+        Self::with_escape(open, close, StringEscape::DoubledQuote)
+    }
+
+    pub fn with_escape(open: &'static str, close: &'static str, escape: StringEscape) -> Self {
+        Self {
+            open,
+            close,
+            escape,
+            multiline: true,
+            close_scope: LineScope::Anywhere,
+            open_requires_line_end: false,
+        }
+    }
+
+    pub fn close_at_start(mut self) -> Self {
+        self.close_scope = LineScope::StartOfLine;
+        self
+    }
+
+    pub fn open_at_line_end(mut self) -> Self {
+        self.open_requires_line_end = true;
+        self
+    }
+
+    pub fn single_line(mut self) -> Self {
+        self.multiline = false;
+        self
+    }
+}
+
+/// A character literal (`'a'`, `'\n'`) or, for C-like languages, a multi-character literal.
+#[derive(Debug, Clone, Copy)]
+pub struct CharLiteral {
+    pub quote: char,
+    pub max_len: usize,
+}
+
+impl CharLiteral {
+    pub fn new(quote: char, max_len: usize) -> Self {
+        Self { quote, max_len }
+    }
+}
+
+/// A comment region delimited by line-oriented markers (Ruby `=begin`/`=end`, Perl POD).
+#[derive(Debug, Clone)]
+pub struct RegionComment {
+    pub start: &'static str,
+    pub end: &'static str,
+    pub start_scope: LineScope,
+    pub end_scope: LineScope,
+}
+
+impl RegionComment {
+    pub fn new(start: &'static str, end: &'static str) -> Self {
+        Self {
+            start,
+            end,
+            start_scope: LineScope::Anywhere,
+            end_scope: LineScope::Anywhere,
+        }
+    }
+
+    pub fn at_start(mut self) -> Self {
+        self.start_scope = LineScope::StartOfLine;
+        self
+    }
+
+    pub fn end_at_start(mut self) -> Self {
+        self.end_scope = LineScope::StartOfLine;
+        self
+    }
+}
+
+/// Describes the comment rules for a language.
+///
+/// The four legacy fields are kept for compatibility and are merged into the
+/// detailed rule sets by [`crate::analyzer::CompiledSyntax`]. New definitions
+/// should use the builder methods instead.
+#[derive(Debug, Clone, Default)]
 pub struct CommentRule {
     /// Line comment prefixes, e.g. ["//", "#"]
     pub line_comments: Vec<&'static str>,
@@ -13,6 +242,50 @@ pub struct CommentRule {
     pub block_comment_end: Option<&'static str>,
     /// String delimiters (to avoid false positives with comment markers inside strings)
     pub string_delimiters: Vec<&'static str>,
+    /// Detailed line-comment rules.
+    pub line: Vec<LineComment>,
+    /// Detailed block-comment rules.
+    pub blocks: Vec<BlockComment>,
+    /// Detailed string-literal rules.
+    pub strings: Vec<StringLiteral>,
+    /// Character-literal rules.
+    pub chars: Vec<CharLiteral>,
+    /// Line-oriented comment regions.
+    pub regions: Vec<RegionComment>,
+    /// Heredoc markers, e.g. `<<` or `<<<`.
+    pub heredocs: Vec<&'static str>,
+}
+
+impl CommentRule {
+    pub fn line_rule(mut self, rule: LineComment) -> Self {
+        self.line.push(rule);
+        self
+    }
+
+    pub fn block_rule(mut self, rule: BlockComment) -> Self {
+        self.blocks.push(rule);
+        self
+    }
+
+    pub fn string_rule(mut self, rule: StringLiteral) -> Self {
+        self.strings.push(rule);
+        self
+    }
+
+    pub fn char_rule(mut self, quote: char, max_len: usize) -> Self {
+        self.chars.push(CharLiteral::new(quote, max_len));
+        self
+    }
+
+    pub fn region_rule(mut self, rule: RegionComment) -> Self {
+        self.regions.push(rule);
+        self
+    }
+
+    pub fn heredoc(mut self, marker: &'static str) -> Self {
+        self.heredocs.push(marker);
+        self
+    }
 }
 
 /// Describes a supported language
@@ -44,6 +317,7 @@ fn rule(
         block_comment_start: block.map(|(start, _)| start),
         block_comment_end: block.map(|(_, end)| end),
         string_delimiters,
+        ..Default::default()
     }
 }
 
@@ -95,11 +369,6 @@ fn dash_only() -> CommentRule {
     rule(vec!["--"], None, vec!["\"", "'"])
 }
 
-/// `--` line comments plus one block comment pair.
-fn dash_block(start: &'static str, end: &'static str) -> CommentRule {
-    rule(vec!["--"], Some((start, end)), vec!["\"", "'"])
-}
-
 /// `;` line comments without block comments (Lisp-family rules).
 fn semicolon_only() -> CommentRule {
     rule(vec![";"], None, vec!["\""])
@@ -122,12 +391,15 @@ pub fn supported_languages() -> Vec<Language> {
         Language {
             name: "Rust",
             extensions: vec![".rs"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("r\"", "\""))
+                .string_rule(StringLiteral::raw("r#\"", "\"#"))
+                .string_rule(StringLiteral::raw("r##\"", "\"##"))
+                .string_rule(StringLiteral::raw("r###\"", "\"###"))
+                .char_rule('\'', 1),
         },
         // ─── C / C++ ───
         Language {
@@ -135,67 +407,66 @@ pub fn supported_languages() -> Vec<Language> {
             extensions: vec![
                 ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".c++", ".h++",
             ],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("R\"(", ")\""))
+                .char_rule('\'', 8),
         },
         // ─── Java ───
         Language {
             name: "Java",
             extensions: vec![".java"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .char_rule('\'', 1),
         },
         // ─── Kotlin ───
         Language {
             name: "Kotlin",
             extensions: vec![".kt", ".kts"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("\"\"\"", "\"\"\""))
+                .char_rule('\'', 1),
         },
         // ─── Scala ───
         Language {
             name: "Scala",
             extensions: vec![".scala"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("\"\"\"", "\"\"\""))
+                .char_rule('\'', 1),
         },
         // ─── Go ───
         Language {
             name: "Go",
             extensions: vec![".go"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'", "`"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("`", "`"))
+                .char_rule('\'', 1),
         },
         // ─── Swift ───
         Language {
             name: "Swift",
             extensions: vec![".swift"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\""],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("\"\"\"")),
         },
         // ─── Python ───
         Language {
@@ -206,84 +477,114 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: Some("\"\"\""),
                 block_comment_end: Some("\"\"\""),
                 string_delimiters: vec!["\"", "'", "\"\"\"", "'''"],
+                ..Default::default()
             },
         },
         // ─── Ruby ───
         Language {
             name: "Ruby",
             extensions: vec![".rb", ".rake"],
-            comment_rule: CommentRule {
-                line_comments: vec!["#"],
-                block_comment_start: Some("=begin"),
-                block_comment_end: Some("=end"),
-                string_delimiters: vec!["\"", "'", "`"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .block_rule(
+                    BlockComment::new("=begin", "=end")
+                        .at_start()
+                        .end_at_start(),
+                )
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'"))
+                .string_rule(StringLiteral::new("`")),
         },
         // ─── JavaScript / TypeScript ───
         Language {
             name: "JavaScript/TypeScript",
             extensions: vec![".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'", "`"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'"))
+                .string_rule(StringLiteral::new("`")),
         },
         // ─── C# ───
         Language {
             name: "C#",
             extensions: vec![".cs"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::doubled("@\"", "\""))
+                .string_rule(StringLiteral::doubled("$@\"", "\""))
+                .string_rule(StringLiteral::doubled("@$\"", "\""))
+                .string_rule(StringLiteral::raw("\"\"\"", "\"\"\""))
+                .string_rule(StringLiteral::raw("$\"\"\"", "\"\"\""))
+                .char_rule('\'', 1),
         },
         // ─── PHP ───
         Language {
             name: "PHP",
             extensions: vec![".php"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//", "#"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .line_rule(LineComment::new("#"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'"))
+                .heredoc("<<<"),
         },
         // ─── Shell ───
         Language {
             name: "Shell",
             extensions: vec![".sh", ".bash", ".zsh"],
-            comment_rule: CommentRule {
-                line_comments: vec!["#"],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("#").require_whitespace_before())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::with_escape("'", "'", StringEscape::None))
+                .heredoc("<<"),
         },
+        // ─── Batch ───
+        language(
+            "Batch",
+            vec![".bat", ".cmd"],
+            CommentRule::default()
+                .line_rule(
+                    LineComment::first_non_space("rem")
+                        .case_insensitive()
+                        .with_boundary_after(BoundaryAfter::Word),
+                )
+                .line_rule(
+                    LineComment::first_non_space("@rem")
+                        .case_insensitive()
+                        .with_boundary_after(BoundaryAfter::Word),
+                )
+                .line_rule(LineComment::first_non_space("::"))
+                .string_rule(StringLiteral::doubled("\"", "\"")),
+        ),
         // ─── Perl ───
         Language {
             name: "Perl",
             extensions: vec![".pl", ".pm"],
-            comment_rule: CommentRule {
-                line_comments: vec!["#"],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .region_rule(RegionComment::new("=", "=cut").at_start().end_at_start())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'")),
         },
         // ─── Lua ───
         Language {
             name: "Lua",
             extensions: vec![".lua"],
-            comment_rule: CommentRule {
-                line_comments: vec!["--"],
-                block_comment_start: Some("--[["),
-                block_comment_end: Some("]]"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("--"))
+                .block_rule(BlockComment::new("--[[", "]]"))
+                .block_rule(BlockComment::new("--[=[", "]=]"))
+                .block_rule(BlockComment::new("--[==[", "]==]"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'"))
+                .string_rule(StringLiteral::raw("[[", "]]"))
+                .string_rule(StringLiteral::raw("[=[", "]=]"))
+                .string_rule(StringLiteral::raw("[==[", "]==]")),
         },
         // ─── HTML ───
         Language {
@@ -294,6 +595,7 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: Some("<!--"),
                 block_comment_end: Some("-->"),
                 string_delimiters: vec!["\"", "'"],
+                ..Default::default()
             },
         },
         // ─── CSS ───
@@ -305,64 +607,65 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: Some("/*"),
                 block_comment_end: Some("*/"),
                 string_delimiters: vec!["\"", "'"],
+                ..Default::default()
             },
         },
         // ─── SQL ───
         Language {
             name: "SQL",
             extensions: vec![".sql"],
-            comment_rule: CommentRule {
-                line_comments: vec!["--"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["'", "\""],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("--"))
+                .block_rule(BlockComment::new("/*", "*/"))
+                .string_rule(StringLiteral::doubled("'", "'"))
+                .string_rule(StringLiteral::doubled("\"", "\"")),
         },
         // ─── Haskell ───
         Language {
             name: "Haskell",
             extensions: vec![".hs", ".lhs"],
-            comment_rule: CommentRule {
-                line_comments: vec!["--"],
-                block_comment_start: Some("{-"),
-                block_comment_end: Some("-}"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("--").with_boundary_after(BoundaryAfter::Symbol))
+                .block_rule(BlockComment::new("{-", "-}").nested())
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
         },
         // ─── Zig ───
-        language("Zig", vec![".zig"], slash_no_block()),
+        language(
+            "Zig",
+            vec![".zig"],
+            CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
+        ),
         // ─── Vim Script ───
         Language {
             name: "Vim Script",
             extensions: vec![".vim"],
-            comment_rule: CommentRule {
-                line_comments: vec!["\""],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["'", "\""],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("\""))
+                .string_rule(StringLiteral::doubled("'", "'").single_line()),
         },
         // ─── TOML ───
         Language {
             name: "TOML",
             extensions: vec![".toml"],
-            comment_rule: CommentRule {
-                line_comments: vec!["#"],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'"))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .string_rule(StringLiteral::raw("'''", "'''")),
         },
         // ─── YAML ───
         Language {
             name: "YAML",
             extensions: vec![".yml", ".yaml"],
-            comment_rule: CommentRule {
-                line_comments: vec!["#"],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("#").require_whitespace_before())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::doubled("'", "'")),
         },
         // ─── XML ───
         Language {
@@ -373,18 +676,20 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: Some("<!--"),
                 block_comment_end: Some("-->"),
                 string_delimiters: vec!["\"", "'"],
+                ..Default::default()
             },
         },
         // ─── Dart ───
         Language {
             name: "Dart",
             extensions: vec![".dart"],
-            comment_rule: CommentRule {
-                line_comments: vec!["//"],
-                block_comment_start: Some("/*"),
-                block_comment_end: Some("*/"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("'"))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .string_rule(StringLiteral::new("'''")),
         },
         // ─── R ───
         Language {
@@ -395,6 +700,7 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: None,
                 block_comment_end: None,
                 string_delimiters: vec!["\"", "'"],
+                ..Default::default()
             },
         },
         // ─── Elixir ───
@@ -406,6 +712,7 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: None,
                 block_comment_end: None,
                 string_delimiters: vec!["\"", "'"],
+                ..Default::default()
             },
         },
         // ─── Erlang ───
@@ -417,41 +724,48 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: None,
                 block_comment_end: None,
                 string_delimiters: vec!["\"", "'"],
+                ..Default::default()
             },
         },
         // ─── Julia ───
         Language {
             name: "Julia",
             extensions: vec![".jl"],
-            comment_rule: CommentRule {
-                line_comments: vec!["#"],
-                block_comment_start: Some("#="),
-                block_comment_end: Some("=#"),
-                string_delimiters: vec!["\"", "'"],
-            },
+            comment_rule: CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .block_rule(BlockComment::new("#=", "=#").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .char_rule('\'', 1),
         },
         // ─── Fortran ───
-        Language {
-            name: "Fortran",
-            extensions: vec![".f", ".f90", ".f95", ".f03", ".f08"],
-            comment_rule: CommentRule {
-                line_comments: vec!["!"],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["\"", "'"],
-            },
-        },
+        language(
+            "Fortran",
+            vec![".f90", ".f95", ".f03", ".f08"],
+            CommentRule::default()
+                .line_rule(LineComment::new("!"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::doubled("'", "'")),
+        ),
+        language(
+            "Fortran (fixed form)",
+            vec![".f", ".for", ".f77"],
+            CommentRule::default()
+                .line_rule(LineComment::new("!"))
+                .line_rule(LineComment::at_start("c").case_insensitive())
+                .line_rule(LineComment::at_start("*"))
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::doubled("'", "'")),
+        ),
         // ─── Ada ───
-        Language {
-            name: "Ada",
-            extensions: vec![".adb", ".ads"],
-            comment_rule: CommentRule {
-                line_comments: vec!["--"],
-                block_comment_start: None,
-                block_comment_end: None,
-                string_delimiters: vec!["\"", "'"],
-            },
-        },
+        language(
+            "Ada",
+            vec![".adb", ".ads"],
+            CommentRule::default()
+                .line_rule(LineComment::new("--"))
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
+        ),
         // ─── Vue ───
         Language {
             name: "Vue",
@@ -461,6 +775,7 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: Some("/*"),
                 block_comment_end: Some("*/"),
                 string_delimiters: vec!["\"", "'", "`"],
+                ..Default::default()
             },
         },
         // ─── Markdown ───
@@ -472,6 +787,7 @@ pub fn supported_languages() -> Vec<Language> {
                 block_comment_start: Some("<!--"),
                 block_comment_end: Some("-->"),
                 string_delimiters: vec!["\"", "'", "`"],
+                ..Default::default()
             },
         },
         // ─── Additional C-family languages ───
@@ -508,7 +824,18 @@ pub fn supported_languages() -> Vec<Language> {
         language("Solidity", vec![".sol"], c_style()),
         language("Move", vec![".move"], c_style_double_quote()),
         language("Cairo", vec![".cairo"], c_style()),
-        language("D", vec![".d"], c_style_template()),
+        language(
+            "D",
+            vec![".d"],
+            CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("/*", "*/").nested())
+                .block_rule(BlockComment::new("/+", "+/").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("`", "`"))
+                .string_rule(StringLiteral::raw("r\"", "\""))
+                .char_rule('\'', 1),
+        ),
         language("Pony", vec![".pony"], c_style()),
         language("Odin", vec![".odin"], c_style()),
         language("Chapel", vec![".chpl"], c_style()),
@@ -605,7 +932,25 @@ pub fn supported_languages() -> Vec<Language> {
         language(
             "PowerShell",
             vec![".ps1", ".psm1", ".psd1"],
-            rule(vec!["#"], Some(("<#", "#>")), vec!["\"", "'"]),
+            CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .block_rule(BlockComment::new("<#", "#>"))
+                .string_rule(StringLiteral::with_escape(
+                    "\"",
+                    "\"",
+                    StringEscape::Backtick,
+                ))
+                .string_rule(StringLiteral::doubled("'", "'"))
+                .string_rule(
+                    StringLiteral::with_escape("@\"", "\"@", StringEscape::Backtick)
+                        .close_at_start()
+                        .open_at_line_end(),
+                )
+                .string_rule(
+                    StringLiteral::with_escape("@'", "'@", StringEscape::None)
+                        .close_at_start()
+                        .open_at_line_end(),
+                ),
         ),
         language(
             "Properties",
@@ -620,7 +965,13 @@ pub fn supported_languages() -> Vec<Language> {
         language(
             "Nim",
             vec![".nim", ".nims"],
-            rule(vec!["#"], Some(("#[", "]#")), vec!["\"", "\"\"\""]),
+            CommentRule::default()
+                .line_rule(LineComment::new("#"))
+                .block_rule(BlockComment::new("#[", "]#").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .string_rule(StringLiteral::raw("r\"", "\""))
+                .char_rule('\'', 1),
         ),
         language(
             "Raku",
@@ -677,33 +1028,66 @@ pub fn supported_languages() -> Vec<Language> {
         language(
             "OCaml/Standard ML",
             vec![".ml", ".mli", ".sml", ".sig"],
-            rule(vec![], Some(("(*", "*)")), vec!["\""]),
+            CommentRule::default()
+                .block_rule(BlockComment::new("(*", "*)").nested())
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
         ),
         language(
             "F#",
             vec![".fs", ".fsi", ".fsx"],
-            rule(vec!["//"], Some(("(*", "*)")), vec!["\"", "\"\"\""]),
+            CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("(*", "*)").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .char_rule('\'', 1),
         ),
-        language("Elm", vec![".elm"], dash_block("{-", "-}")),
+        language(
+            "Elm",
+            vec![".elm"],
+            CommentRule::default()
+                .line_rule(LineComment::new("--"))
+                .block_rule(BlockComment::new("{-", "-}").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::new("\"\"\""))
+                .char_rule('\'', 1),
+        ),
         language(
             "PureScript",
             vec![".purs"],
-            rule(vec!["--"], Some(("{-", "-}")), vec!["\""]),
+            CommentRule::default()
+                .line_rule(LineComment::new("--").with_boundary_after(BoundaryAfter::Symbol))
+                .block_rule(BlockComment::new("{-", "-}").nested())
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
         ),
         language(
             "Idris",
             vec![".idr"],
-            rule(vec!["--"], Some(("{-", "-}")), vec!["\""]),
+            CommentRule::default()
+                .line_rule(LineComment::new("--").with_boundary_after(BoundaryAfter::Symbol))
+                .block_rule(BlockComment::new("{-", "-}").nested())
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
         ),
         language(
             "Agda",
             vec![".agda"],
-            rule(vec!["--"], Some(("{-", "-}")), vec!["\""]),
+            CommentRule::default()
+                .line_rule(LineComment::new("--").with_boundary_after(BoundaryAfter::Symbol))
+                .block_rule(BlockComment::new("{-", "-}").nested())
+                .string_rule(StringLiteral::new("\""))
+                .char_rule('\'', 1),
         ),
         language(
             "Dhall",
             vec![".dhall"],
-            rule(vec!["--"], Some(("{-", "-}")), vec!["\"", "''"]),
+            CommentRule::default()
+                .line_rule(LineComment::new("--").with_boundary_after(BoundaryAfter::Symbol))
+                .block_rule(BlockComment::new("{-", "-}").nested())
+                .string_rule(StringLiteral::new("\""))
+                .string_rule(StringLiteral::raw("''", "''")),
         ),
         language(
             "Prolog",
@@ -713,12 +1097,23 @@ pub fn supported_languages() -> Vec<Language> {
         language(
             "Visual Basic",
             vec![".vb", ".vbs", ".bas"],
-            rule(vec!["'"], None, vec!["\""]),
+            CommentRule::default()
+                .line_rule(LineComment::new("'"))
+                .line_rule(
+                    LineComment::first_non_space("rem")
+                        .case_insensitive()
+                        .with_boundary_after(BoundaryAfter::Word),
+                )
+                .string_rule(StringLiteral::doubled("\"", "\"")),
         ),
         language(
             "Pascal",
             vec![".pas", ".dpr", ".lpr"],
-            rule(vec!["//"], Some(("{", "}")), vec!["'"]),
+            CommentRule::default()
+                .line_rule(LineComment::new("//"))
+                .block_rule(BlockComment::new("{", "}"))
+                .block_rule(BlockComment::new("(*", "*)"))
+                .string_rule(StringLiteral::doubled("'", "'")),
         ),
         language(
             "Assembly",
@@ -847,7 +1242,11 @@ mod tests {
                 language.name
             );
             assert!(
-                !rule.line_comments.is_empty() || rule.block_comment_start.is_some(),
+                !rule.line_comments.is_empty()
+                    || rule.block_comment_start.is_some()
+                    || !rule.line.is_empty()
+                    || !rule.blocks.is_empty()
+                    || !rule.regions.is_empty(),
                 "{} has no comment syntax",
                 language.name
             );
@@ -864,6 +1263,8 @@ mod tests {
             (".coffee", "CoffeeScript"),
             (".wat", "WebAssembly Text"),
             (".svelte", "Svelte"),
+            (".bat", "Batch"),
+            (".f", "Fortran (fixed form)"),
         ] {
             let language = find_language_by_ext(extension)
                 .unwrap_or_else(|| panic!("no language for {extension}"));
@@ -901,5 +1302,43 @@ mod tests {
         let wat = stats_for(".wat", ";; comment\n(; block ;)\n(module)");
         assert_eq!(wat.comment_lines, 2);
         assert_eq!(wat.code_lines, 1);
+    }
+
+    #[test]
+    fn phase_two_rules_are_wired_into_the_registry() {
+        let rust = stats_for(
+            ".rs",
+            "let x: &'a str = \"v\"; // real\n/* /* nested */ still */\n",
+        );
+        assert_eq!(rust.mixed_lines, 1);
+        assert_eq!(rust.comment_lines, 1);
+
+        let shell = stats_for(
+            ".sh",
+            "echo ${#x}\necho hi # real\ncat <<EOF\n# body\nEOF\n",
+        );
+        assert_eq!(shell.code_lines, 4);
+        assert_eq!(shell.mixed_lines, 1);
+        assert_eq!(shell.comment_lines, 0);
+
+        let batch = stats_for(".bat", "REM comment\nremove x\n:: comment\n");
+        assert_eq!(batch.comment_lines, 2);
+        assert_eq!(batch.code_lines, 1);
+
+        let fortran = stats_for(".f", "C fixed comment\n      CALL FOO\n");
+        assert_eq!(fortran.comment_lines, 1);
+        assert_eq!(fortran.code_lines, 1);
+
+        let vim = stats_for(".vim", "\" comment\nlet x = 'a'\n");
+        assert_eq!(vim.comment_lines, 1);
+        assert_eq!(vim.code_lines, 1);
+
+        let powershell = stats_for(".ps1", "$x = @\"\n# body\n\"@\n# comment\n");
+        assert_eq!(powershell.code_lines, 3);
+        assert_eq!(powershell.comment_lines, 1);
+
+        let perl = stats_for(".pl", "=pod\n# pod\n=cut\nprint 1; # real\n");
+        assert_eq!(perl.comment_lines, 3);
+        assert_eq!(perl.mixed_lines, 1);
     }
 }

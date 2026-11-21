@@ -6,9 +6,9 @@ Count lines of code, comments, and blanks across your entire project — intelli
 
 ## Features
 
-- **120 Languages Supported** — Rust, C/C++, C#, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, PHP, Lua, Haskell, SQL, HTML/CSS, Markdown, plus CUDA, OpenCL, GLSL/HLSL/Metal, Verilog/VHDL, Solidity, Move, Zig, Nim, Nix, HCL/Terraform, PowerShell, Dart, Elixir, Erlang, Julia, Fortran, Ada, Vue, Svelte and many more. Run `codelines --list` for the full list.
-- **Smart Comment Detection** — Distinguishes line comments (`//`, `#`, `--`, `%`, etc.) and block comments (`/* */`, `""" """`, `<!-- -->`, `{- -}`, etc.) per language.
-- **String-Aware Parsing** — Correctly ignores comment-like markers inside string literals to avoid false positives.
+- **122 Languages Supported** — Rust, C/C++, C#, Java, Kotlin, Scala, Go, Swift, Python, Ruby, JavaScript/TypeScript, PHP, Lua, Haskell, SQL, HTML/CSS, Markdown, plus CUDA, OpenCL, GLSL/HLSL/Metal, Verilog/VHDL, Solidity, Move, Zig, Nim, Nix, HCL/Terraform, PowerShell, Dart, Elixir, Erlang, Julia, Fortran, Ada, Vue, Svelte and many more. Run `codelines --list` for the full list.
+- **Smart Comment Detection** — Distinguishes line comments (`//`, `#`, `--`, `%`, etc.) and block comments (`/* */`, `""" """`, `<!-- -->`, `{- -}`, etc.) per language, including **nested blocks** (Rust, Kotlin, Scala, Swift, D, OCaml, Haskell family) and multiple block syntaxes (Pascal, D, Lua).
+- **String-Aware Parsing** — Correctly ignores comment-like markers inside raw/verbatim strings (`r#"..."#`, `@"..."`, `"""..."""`), character literals, heredocs and PowerShell here-strings. Rust lifetimes (`&'a str`), Verilog literals (`4'b1010`) and Ada/VHDL attributes are not treated as strings.
 - **Line Classification** — Each line is classified as: **code**, **comment**, **mixed** (code + comment), or **blank**.
 - **Recursive Directory Scanning** — Walks entire directory trees with sensible defaults that skip VCS directories, build artifacts, and dependency folders.
 - **`.gitignore` Aware** — Honours `.gitignore` files (including nested ones and those in parent directories); disable with `--no-gitignore` or the GUI checkbox.
