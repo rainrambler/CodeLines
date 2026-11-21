@@ -1,0 +1,29 @@
+// Windows resource script for the CodeLines GUI executable.
+// Compiled by build.rs (see embed-resource); keep ASCII-only for rc.exe.
+// Keep the version numbers below in sync with gui/Cargo.toml.
+
+1 ICON "icon.ico"
+
+1 VERSIONINFO
+  FILEVERSION 1,0,1,0
+  PRODUCTVERSION 1,0,1,0
+  FILEOS 0x40004   // VOS_NT_WINDOWS32
+  FILETYPE 0x1     // VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"
+    BEGIN
+      VALUE "FileDescription", "CodeLines - code statistics"
+      VALUE "FileVersion", "1.0.1"
+      VALUE "InternalName", "codelines-gui"
+      VALUE "OriginalFilename", "codelines-gui.exe"
+      VALUE "ProductName", "CodeLines"
+      VALUE "LegalCopyright", "MIT License"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

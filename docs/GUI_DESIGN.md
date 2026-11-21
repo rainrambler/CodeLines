@@ -278,6 +278,33 @@ color always means the same thing.
 
 Both are drawn with the egui painter — no extra plotting dependency.
 
+### 6.4 App icon
+
+The icon reuses the category colours, so the mark reads as "lines of code"
+measured by category: a rounded dark tile with an editor gutter and three
+pill-shaped lines — code (`#4F9CF7`), comments (`#3FC18F`) and mixed
+(`#F2B541`) — on a 1024 × 1024 grid with a 224 radius.
+
+<img src="../gui/assets/icon-256.png" width="120" alt="CodeLines app icon"/>
+
+Assets live in `gui/assets/`:
+
+| File | Use |
+|------|-----|
+| `icon.svg` | vector master (same geometry as the rasters) |
+| `icon-1024…16.png` | window icon and launcher/store sizes |
+| `icon.ico` | Windows exe resource (16–256 px, via `build.rs`) |
+| `generate_icon.py` | regenerates every artefact above from one spec |
+
+The window/taskbar icon is embedded at compile time (`include_bytes!` +
+`eframe::icon_data::from_png_bytes`), and on Windows `build.rs` compiles
+`codelines.rc` with `embed-resource` so the `.exe` also carries the icon and
+version metadata. Regenerate after tweaking the spec:
+
+```bash
+python gui/assets/generate_icon.py   # requires Pillow + NumPy
+```
+
 ---
 
 ## 7. Data model

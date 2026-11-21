@@ -13,3 +13,6 @@ eframe = { version = "0.37", default-features = false, features = [
 ] }
 egui_extras = { version = "0.37", default-features = false }
 rfd = "0.17"
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"

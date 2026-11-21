@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="CodeLines">
+  <title>CodeLines</title>
+  <defs>
+    <linearGradient id="bg" x1="0.14" y1="0" x2="0.72" y2="1">
+      <stop offset="0.0" stop-color="#28324B"/>
+      <stop offset="0.55" stop-color="#171B26"/>
+      <stop offset="1.0" stop-color="#0D0F15"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.16" cy="0.02" r="0.8">
+      <stop offset="0" stop-color="#4F9CF7" stop-opacity="0.42"/>
+      <stop offset="0.55" stop-color="#4F9CF7" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#4F9CF7" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bar0" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#67A9F8"/>
+      <stop offset="1" stop-color="#478CDE"/>
+    </linearGradient>
+    <linearGradient id="bar1" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#59C99E"/>
+      <stop offset="1" stop-color="#38AD80"/>
+    </linearGradient>
+    <linearGradient id="bar2" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F3BF5B"/>
+      <stop offset="1" stop-color="#D9A23A"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect width="1024" height="1024" rx="224"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <rect width="1024" height="1024" fill="url(#glow)"/>
+  </g>
+  <rect x="2" y="2" width="1020" height="1020" rx="222" fill="none" stroke="#FFFFFF" stroke-opacity="0.09" stroke-width="3"/>
+  <rect x="214" y="194" width="16" height="636" rx="8" fill="#3E4757"/>
+  <rect x="286" y="194" width="540" height="132" rx="66" fill="url(#bar0)"/>
+  <rect x="286" y="446" width="384" height="132" rx="66" fill="url(#bar1)"/>
+  <rect x="286" y="698" width="468" height="132" rx="66" fill="url(#bar2)"/>
+</svg>
