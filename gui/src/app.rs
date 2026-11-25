@@ -105,6 +105,15 @@ impl ViewState {
 /// The CodeLines desktop application.
 pub struct CodeLinesApp {
     dark: bool,
+    /// Whether the native window theme has been re-sent after the window was shown.
+    ///
+    /// eframe creates its window hidden and shows it after the first frame, so the
+    /// initial theme request reaches the OS before the window has focus. On Windows
+    /// the title bar then keeps its light inactive colors while an explicitly light
+    /// caption text was already applied, which makes the title unreadable until the
+    /// theme is toggled. Re-sending the theme once the window is focused lets the
+    /// platform redraw the non-client area with the right colors.
+    window_theme_synced: bool,
     show_filters: bool,
     root: String,
     exclude_dirs: String,
@@ -126,6 +135,7 @@ impl CodeLinesApp {
         theme::apply(&cc.egui_ctx, true);
         let mut app = Self {
             dark: true,
+            window_theme_synced: false,
             show_filters: true,
             root: String::new(),
             exclude_dirs: String::new(),
@@ -269,6 +279,25 @@ impl CodeLinesApp {
         self.start_analysis(ctx);
     }
 
+    /// Re-apply the native window theme once the window has been shown and focused.
+    ///
+    /// See [`Self::window_theme_synced`] for why this is needed on Windows.
+    fn sync_window_theme(&mut self, ctx: &egui::Context) {
+        if self.window_theme_synced {
+            return;
+        }
+        if !ctx.input(|input| input.viewport().focused.unwrap_or(false)) {
+            return;
+        }
+
+        self.window_theme_synced = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(if self.dark {
+            egui::SystemTheme::Dark
+        } else {
+            egui::SystemTheme::Light
+        }));
+    }
+
     fn apply_actions(&mut self, ctx: &egui::Context, actions: Vec<UiAction>) {
         for action in actions {
             match action {
@@ -397,6 +426,7 @@ impl eframe::App for CodeLinesApp {
         let mut actions = Vec::new();
 
         self.poll_worker();
+        self.sync_window_theme(&ctx);
         self.collect_shortcuts(&ctx, &mut actions);
         self.collect_dropped_paths(&ctx);
 
